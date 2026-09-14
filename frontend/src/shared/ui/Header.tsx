@@ -17,14 +17,15 @@ export function Header() {
 
   const [titleMode, setTitleMode] = useState<TitleMode>("full");
   const [isLinesOpen, setIsLinesOpen] = useState(false);
+  const [prevPathname, setPrevPathname] = useState(pathname);
+  if (prevPathname !== pathname) {
+    setPrevPathname(pathname);
+    setIsLinesOpen(false);
+  }
   const menuContainerRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const fullMeasureRef = useRef<HTMLSpanElement>(null);
   const compactMeasureRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    setIsLinesOpen(false);
-  }, [pathname]);
 
   useEffect(() => {
     if (!isLinesOpen) {
