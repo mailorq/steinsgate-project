@@ -7,7 +7,7 @@ import { checkComment, MAX_LENGTH } from "@/features/comments/moderation";
 import { SpoilerText } from "@/features/comments/SpoilerText";
 import { ApiError, commentsApi } from "@/shared/api";
 import type { CommentOut, CommentPageOut } from "@/shared/api";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { Avatar } from "@/shared/ui/Avatar";
 import { Modal } from "@/shared/ui/Modal";
 

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Link, Navigate } from "react-router-dom";
 
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { Avatar } from "@/shared/ui/Avatar";
 
 export function ProfilePage() {

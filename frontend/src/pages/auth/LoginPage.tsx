@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { ApiError, authApi } from "@/shared/api";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { FormCard } from "@/shared/ui/FormCard";
 import { TextField } from "@/shared/ui/TextField";
 

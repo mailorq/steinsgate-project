@@ -13,7 +13,7 @@ import { ChangeAvatarPage } from "@/pages/profile/ChangeAvatarPage";
 import { ChangeNicknamePage } from "@/pages/profile/ChangeNicknamePage";
 import { ProfilePage } from "@/pages/profile/ProfilePage";
 import { SettingsPage } from "@/pages/profile/SettingsPage";
-import { SessionProvider } from "@/shared/session/SessionContext";
+import { SessionProvider } from "@/shared/session/SessionProvider";
 
 const queryClient = new QueryClient({
   defaultOptions: {
