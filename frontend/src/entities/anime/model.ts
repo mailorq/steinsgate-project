@@ -5,7 +5,7 @@ import type { AnimeStatsOut } from "@/shared/api";
 import { findAnimeBySlug } from "@/shared/config/animes";
 import type { AnimeInfo } from "@/shared/config/animes";
 
-export function animeStatsKey(slug: string) {
+function animeStatsKey(slug: string) {
   return ["anime-stats", slug] as const;
 }
 
