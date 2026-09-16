@@ -20,7 +20,7 @@ from .schemas import (
     RegisterIn,
     SessionOut,
     UserOut,
-    VerificationDeliveryOut,
+    VerificationDispatchOut,
     VerifyEmailIn,
 )
 
@@ -83,8 +83,7 @@ def session(request):
 @auth_router.post(
     "/register",
     response={
-        201: VerificationDeliveryOut,
-        202: VerificationDeliveryOut,
+        201: VerificationDispatchOut,
         400: MessageOut,
         403: MessageOut,
         429: MessageOut,
@@ -107,24 +106,9 @@ def register(request, payload: RegisterIn):
     except services.EmailDeliveryLimitError as error:
         return resend_limited_response(error)
 
-    # Пользователь и код сохранены в любом случае, дальше подтверждаем через код.
     request.session["pending_user_id"] = result.user.id
-    if result.delivered:
-        return 201, {
-            "detail": "Код подтверждения отправлен на почту",
-            "delivery_confirmed": True,
-            "resend_available_in": result.resend_available_in,
-        }
-    if result.delivery_scheduled:
-        return 202, {
-            "detail": "Регистрация создана. Отправка кода начнётся после сохранения данных.",
-            "delivery_confirmed": False,
-            "resend_available_in": result.resend_available_in,
-        }
-    return 202, {
-        "detail": "Регистрация создана, но отправку не удалось подтвердить. "
-        "Запросите код повторно.",
-        "delivery_confirmed": False,
+    return 201, {
+        "detail": "Код подтверждения отправлен на почту",
         "resend_available_in": result.resend_available_in,
     }
 
@@ -132,8 +116,7 @@ def register(request, payload: RegisterIn):
 @auth_router.post(
     "/resend-verification",
     response={
-        200: VerificationDeliveryOut,
-        202: VerificationDeliveryOut,
+        200: VerificationDispatchOut,
         400: MessageOut,
         403: MessageOut,
         429: MessageOut,
@@ -161,21 +144,8 @@ def resend_verification(request):
     except services.VerificationError as error:
         return 400, {"detail": str(error)}
 
-    if result.delivered:
-        return 200, {
-            "detail": "Код отправлен на почту",
-            "delivery_confirmed": True,
-            "resend_available_in": result.resend_available_in,
-        }
-    if result.delivery_scheduled:
-        return 202, {
-            "detail": "Код создан. Отправка начнётся после сохранения регистрации.",
-            "delivery_confirmed": False,
-            "resend_available_in": result.resend_available_in,
-        }
-    return 202, {
-        "detail": "Код сохранён, но отправку не удалось подтвердить. Попробуйте позже.",
-        "delivery_confirmed": False,
+    return 200, {
+        "detail": "Код отправлен на почту",
         "resend_available_in": result.resend_available_in,
     }
 

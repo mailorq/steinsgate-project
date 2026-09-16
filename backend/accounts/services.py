@@ -1,7 +1,9 @@
 import logging
 import os
+import smtplib
 import warnings
 from dataclasses import dataclass
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate
@@ -11,9 +13,10 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.core.validators import validate_email
-from django.db import IntegrityError, connection, transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
+from kombu.exceptions import OperationalError as BrokerUnavailableError
 from PIL import Image
 
 from .models import EmailDeliveryQuota, EmailVerificationCode, email_delivery_fingerprint
@@ -29,6 +32,8 @@ ALLOWED_AVATAR_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
 ALLOWED_AVATAR_FORMATS = ("JPEG", "PNG", "GIF", "WEBP")
 MAX_AVATAR_SIZE = 8 * 1024 * 1024
 MAX_AVATAR_PIXELS = 16_000_000
+RECONCILE_GRACE = timedelta(minutes=1)
+RECONCILE_BATCH_SIZE = 500
 
 
 class RegistrationError(Exception):
@@ -39,7 +44,7 @@ class VerificationError(Exception):
     pass
 
 
-class EmailDeliveryError(Exception):
+class TransientDeliveryError(Exception):
     pass
 
 
@@ -72,11 +77,9 @@ class ProfileError(Exception):
 
 
 @dataclass(frozen=True)
-class RegistrationResult:
+class VerificationDispatch:
     user: User
-    delivered: bool
-    delivery_scheduled: bool = False
-    resend_available_in: int = 0
+    resend_available_in: int
 
 
 @dataclass(frozen=True)
@@ -85,13 +88,11 @@ class PurgeResult:
     delivery_quotas: int
 
 
-def _issue_code(record: EmailVerificationCode) -> str:
-    issued_at = timezone.now()
-    raw = record.rotate_code()
+def _issue_code(record: EmailVerificationCode, now) -> None:
+    record.rotate_code()
     record.attempts = 0
-    record.created_at = issued_at
-    record.last_sent_at = issued_at
-    return raw
+    record.created_at = now
+    record.start_dispatch(now)
 
 
 def _lock_or_create_email_delivery_quota(fingerprint: str) -> EmailDeliveryQuota:
@@ -123,39 +124,99 @@ def _claim_email_delivery_quota(email: str) -> None:
     quota.save(update_fields=["delivery_count", "window_started_at"])
 
 
-def _send_code_email(email: str, code: str) -> None:
+def _is_transient_smtp_error(error: Exception) -> bool:
+    # SMTPException наследует OSError, поэтому ответы сервера разбираются раньше
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return all(400 <= code < 500 for code, _ in error.recipients.values())
+    if isinstance(error, smtplib.SMTPResponseException):
+        return 400 <= error.smtp_code < 500
+    if isinstance(error, smtplib.SMTPServerDisconnected):
+        return True
+    if isinstance(error, smtplib.SMTPException):
+        return False
+    return isinstance(error, OSError)
+
+
+def _mark_dispatch(user_id: int, dispatch_token, **fields) -> None:
+    EmailVerificationCode.objects.filter(
+        user_id=user_id, dispatch_token=dispatch_token
+    ).update(**fields)
+
+
+def _schedule_delivery(record: EmailVerificationCode) -> None:
+    user_id, dispatch_token = record.user_id, record.dispatch_token
+    transaction.on_commit(
+        lambda: publish_delivery(user_id=user_id, dispatch_token=dispatch_token),
+        robust=True,
+    )
+
+
+def publish_delivery(*, user_id: int, dispatch_token) -> None:
+    from .tasks import send_verification_code
+
     try:
-        sent_count = send_mail(
+        send_verification_code.apply_async(args=(user_id, str(dispatch_token)))
+    except BrokerUnavailableError:
+        logger.warning("Verification email not queued: broker unavailable")
+        return
+    _mark_dispatch(user_id, dispatch_token, queued_at=timezone.now())
+
+
+def reconcile_pending_deliveries() -> int:
+    now = timezone.now()
+    pending = list(
+        EmailVerificationCode.objects.filter(
+            dispatch_token__isnull=False,
+            queued_at__isnull=True,
+            delivered_at__isnull=True,
+            delivery_failed_at__isnull=True,
+            last_sent_at__lt=now - RECONCILE_GRACE,
+            created_at__gt=now - EmailVerificationCode.TTL,
+            user__is_active=False,
+        ).values_list("user_id", "dispatch_token")[:RECONCILE_BATCH_SIZE]
+    )
+    for user_id, dispatch_token in pending:
+        publish_delivery(user_id=user_id, dispatch_token=dispatch_token)
+    if pending:
+        logger.info("Unqueued verification emails republished", extra={"count": len(pending)})
+    return len(pending)
+
+
+def deliver_verification_code(*, user_id: int, dispatch_token: str) -> None:
+    record = (
+        EmailVerificationCode.objects.select_related("user")
+        .filter(user_id=user_id, dispatch_token=dispatch_token, user__is_active=False)
+        .first()
+    )
+    if record is None or not record.awaits_delivery:
+        return
+
+    code = record.current_code()
+    try:
+        sent = send_mail(
             subject="Verification Email",
             message=f"Your verification code is: {code}",
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[email],
-            fail_silently=False,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[record.user.email],
         )
     except Exception as error:
-        logger.exception("Verification email delivery failed")
-        raise EmailDeliveryError(
-            "Не удалось отправить письмо с кодом. Попробуйте позже."
-        ) from error
-    if sent_count != 1:
-        logger.warning("Verification email was not accepted by the mail backend")
-        raise EmailDeliveryError("Почтовый сервер не принял письмо")
+        if _is_transient_smtp_error(error):
+            raise TransientDeliveryError(str(error)) from error
+        logger.exception("Verification email rejected by the mail server")
+        sent = 0
+    else:
+        if sent != 1:
+            logger.warning("Verification email not accepted by the mail backend")
+
+    if sent == 1:
+        _mark_dispatch(user_id, dispatch_token, delivered_at=timezone.now())
+    else:
+        _mark_dispatch(user_id, dispatch_token, delivery_failed_at=timezone.now())
 
 
-def _deliver_code(email: str, code: str) -> bool:
-    try:
-        _send_code_email(email, code)
-    except EmailDeliveryError:
-        return False
-    return True
-
-
-def _dispatch_code_delivery(email: str, code: str) -> tuple[bool, bool]:
-    if connection.in_atomic_block:
-        transaction.on_commit(lambda: _deliver_code(email, code))
-        logger.info("Verification email delivery deferred until transaction commit")
-        return False, True
-    return _deliver_code(email, code), False
+def record_delivery_failure(*, user_id: int, dispatch_token: str) -> None:
+    logger.error("Verification email not delivered after all retries")
+    _mark_dispatch(user_id, dispatch_token, delivery_failed_at=timezone.now())
 
 
 def _consume_code(record, code: str, not_found_message: str) -> str | None:
@@ -240,7 +301,7 @@ def _validate_registration(*, username: str, email: str, password: str) -> None:
         raise RegistrationError("; ".join(error.messages)) from None
 
 
-def register_user(*, username: str, email: str, password: str) -> RegistrationResult:
+def register_user(*, username: str, email: str, password: str) -> VerificationDispatch:
     username = username.strip()
     email = email.strip().lower()
 
@@ -256,24 +317,16 @@ def register_user(*, username: str, email: str, password: str) -> RegistrationRe
             raise RegistrationError("Имя пользователя или email уже используется") from None
 
         record = EmailVerificationCode(user=user)
-        raw_code = _issue_code(record)
+        _issue_code(record, timezone.now())
         record.save()
         _claim_email_delivery_quota(email)
+        _schedule_delivery(record)
 
-    delivered, delivery_scheduled = _dispatch_code_delivery(email, raw_code)
-    logger.info(
-        "Registration created",
-        extra={"delivered": delivered, "delivery_scheduled": delivery_scheduled},
-    )
-    return RegistrationResult(
-        user=user,
-        delivered=delivered,
-        delivery_scheduled=delivery_scheduled,
-        resend_available_in=record.cooldown_remaining,
-    )
+    logger.info("Registration created")
+    return VerificationDispatch(user=user, resend_available_in=record.cooldown_remaining)
 
 
-def resend_verification(*, user: User) -> RegistrationResult:
+def resend_verification(*, user: User) -> VerificationDispatch:
     # select_for_update сериализует параллельные resend'ы: cooldown и лимит
     # повторов нельзя обойти гонкой.
     with transaction.atomic():
@@ -306,26 +359,21 @@ def resend_verification(*, user: User) -> RegistrationResult:
             raise ResendCooldownError(record.cooldown_remaining)
 
         if needs_new_code:
-            raw_code = _issue_code(record)
+            _issue_code(record, now)
         else:
-            raw_code = record.current_code()
-            record.last_sent_at = now
+            record.start_dispatch(now)
         record.resend_count += 1
         record.save(
             update_fields=[
-                "code_hash", "code_nonce", "attempts", "created_at", "last_sent_at",
+                "code_hash", "code_nonce", "attempts", "created_at",
                 "resend_count", "resend_window_started_at",
+                *EmailVerificationCode.DISPATCH_FIELDS,
             ]
         )
         _claim_email_delivery_quota(pending_user.email)
+        _schedule_delivery(record)
 
-    delivered, delivery_scheduled = _dispatch_code_delivery(pending_user.email, raw_code)
-    return RegistrationResult(
-        user=pending_user,
-        delivered=delivered,
-        delivery_scheduled=delivery_scheduled,
-        resend_available_in=record.cooldown_remaining,
-    )
+    return VerificationDispatch(user=pending_user, resend_available_in=record.cooldown_remaining)
 
 
 def verify_email(*, user: User, code: str) -> User:
