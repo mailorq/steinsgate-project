@@ -4,10 +4,13 @@ A single-title streaming-style web application dedicated to Steins;Gate: watch b
 
 The project is a portfolio work demonstrating a production-shaped full-stack setup: a typed SPA frontend, a Django API backend with a service layer, and a containerized deployment behind nginx with Redis-backed rate limiting and caching.
 
-**Project status: complete.** The implemented scope is intentionally fixed to a
-small, polished Steins;Gate platform rather than an open-ended streaming service.
-Security checks, deployment safeguards, CI and a measured load-testing baseline
-are part of the finished project, not future work.
+**Project status: the current scope is complete.** It is intentionally fixed to
+a small, polished Steins;Gate platform rather than an open-ended streaming
+service. Security checks, deployment safeguards, CI and a measured load-testing
+baseline are part of the finished scope, not future work. The next planned
+iteration moves email delivery onto a background queue; the seam it will use is
+described under
+[deferred side effect](#architecture-decisions-and-design-patterns).
 
 ## Architecture
 
@@ -17,7 +20,7 @@ browser
    v
 nginx (frontend container, :4173)
    |                security headers + CSP, rate limit on /admin/
-   |-- /            SPA static (React build)
+   |-- /            SPA static; index.html revalidated so a deploy is picked up
    |-- /assets/     hashed bundles, cached immutable
    |-- /img/        posters and backgrounds (WebP)
    |-- /static/     Django admin static (shared volume)
@@ -31,9 +34,14 @@ nginx (frontend container, :4173)
                                      aggregate cache)
 ```
 
-- `frontend/` — React SPA. Pages, routing and UI state. API types are generated from the backend OpenAPI schema, so the contract is compile-checked.
+- `frontend/` — React SPA, layered `app → pages → features → entities → shared`. API types are generated from the backend OpenAPI schema, so the contract is compile-checked.
 - `backend/` — Django + django-ninja. Domain apps with a service layer; HTTP endpoints are thin wrappers over services.
 - `compose.yaml` — four services: `db`, `redis`, `backend`, `frontend`.
+
+The catalog uses a **hybrid data model**: immutable title metadata ships inside
+the frontend bundle, while everything that changes at runtime is served by the
+API. [Architecture decisions](#architecture-decisions-and-design-patterns)
+explains the split and the rest of the reasoning behind the code layout.
 
 ## Tech stack
 
@@ -52,7 +60,7 @@ Interactive documentation: `/api/docs` (OpenAPI schema at `/api/openapi.json`).
 | Method     | Path | Auth |
 |------------|-------------------------------|---------|
 | GET        | `/api/anime`                  | public  |
-| GET        | `/api/anime/{slug}`           | public  |
+| GET        | `/api/anime/{slug}`           | public; dynamic stats only |
 | POST       | `/api/anime/{slug}/view`      | public, CSRF |
 | POST       | `/api/anime/{slug}/rating`    | session |
 | GET, POST  | `/api/anime/{slug}/comments`  | POST: session |
@@ -102,6 +110,174 @@ Redis caches hot aggregates: average rating (invalidated on new votes), view cou
 
 Logs are split by purpose in `backend/logs/` (rotating files): `access.log` (HTTP), `application.log` (domain events), `security.log` (lockouts, CSRF, spam), `error.log` (errors only), `worker.log` (gunicorn lifecycle).
 
+## Architecture decisions and design patterns
+
+This section records *why* the code has the shape it has. Every entry names the
+files it lives in, the problem it solves, and the naive alternative that was
+rejected. Patterns are listed only where they are actually load-bearing.
+
+### Hybrid data model: static metadata in the bundle, dynamics through the API
+
+The catalog is four fixed titles that change only with a release. Their name,
+season, type, genres, description, poster and player sources live in
+`frontend/src/shared/config/animes.ts` and ship inside the JS bundle. Everything
+that changes at runtime — average rating, view counter, the visitor's own rating,
+watch progress, comments — comes from the API. `GET /api/anime/{slug}` therefore
+returns four fields (`catalog/schemas.py::AnimeStatsOut`): the `slug` that
+identifies the record, plus the three counters.
+
+**Problem it solves.** Before the split the same description existed twice: as a
+row in `catalog_animedescription` and as a literal in the frontend config. The
+page rendered the config copy and discarded the API copy, so a description could
+be edited in the database and change nothing on screen — a silent divergence that
+no test could catch, because both copies were individually correct.
+
+**Why not the naive approach.** Serving metadata from the database is the
+textbook answer, and it is the right one for a real catalog with an editor UI.
+This project has neither: the titles are fixed, there is no admin workflow for
+them, and the text is part of the design. Keeping it server-side would ship a
+`TextField` over the wire on every page view and put a network round-trip in
+front of the first paint. Keeping it in the bundle renders the page immediately
+and turns content edits into reviewable diffs.
+
+**Cost, stated honestly.** Metadata changes now require a frontend deploy, and
+the database rows remain the catalog's identity — slug uniqueness and the foreign
+keys for ratings, views and comments still live there. That trade is written down
+so the next person does not "fix" it by accident.
+
+The join happens in exactly one place: `frontend/src/entities/anime/model.ts`.
+
+### Backend patterns
+
+**Service layer** — `backend/{accounts,catalog,comments,watch}/services.py`.
+API modules validate input, call one service function and map exceptions to
+status codes; the rules live in services. This keeps the domain callable without
+HTTP: `purge_expired_registrations` and `seed_loadtest` are management commands
+that invoke the same functions the API does, and most tests exercise services
+directly. Rules written into the view would force every one of those callers
+through a synthetic request.
+
+**DTO / schema-driven validation** — `backend/*/schemas.py`. Every route declares
+an explicit Pydantic schema; nothing is auto-bound from a model. Adding a model
+field therefore cannot silently widen the API, and mass assignment is impossible
+by construction. Bounds live there too: `watch/schemas.py::ProgressIn` rejects
+non-finite numbers, because `json.loads` accepts the non-standard `Infinity`
+literal and a stored infinity comes back as `NaN` — a response that is no longer
+valid JSON for any client.
+
+**Result object** — `accounts/services.py::RegistrationResult`. Registration has
+two successful outcomes: the account exists and the code was delivered, or the
+account exists and delivery could not be confirmed. Signalling the second with an
+exception would roll the transaction back and destroy an account whose
+verification letter may well have arrived. A frozen dataclass carries both facts
+out of the service, and the API maps them to `201` and `202`.
+
+**Deferred side effect / commit hook** — `accounts/services.py::_dispatch_code_delivery`
+and `catalog/services.py::register_view_event`. Mail is dispatched after the
+transaction commits, and cache writes are registered through
+`transaction.on_commit`. A letter sent inside a transaction can advertise a row
+that a rollback then removes; a cache entry written inside one can outlive the
+row it describes. This helper is also the seam where a broker-backed queue
+replaces the synchronous send without touching the API contract.
+
+**Pessimistic locking** — `select_for_update` in `accounts/services.py`
+(`verify_email`, `resend_verification`, `purge_expired_registrations`) and a
+PostgreSQL advisory lock in `catalog/services.py::_acquire_view_dedup_lock`.
+Verification and resend read a counter, decide, then write it back; without a
+lock two concurrent requests both read the old value and the attempt limit never
+trips. Version columns with retries would also work, but these paths are short
+and contended by a single user, so blocking is cheaper than retrying.
+
+**Cache-aside with explicit invalidation** — `catalog/services.py`. Average
+rating is read through the cache and invalidated on a new vote; view counters and
+the title list expire by TTL, because a minute of lag on a counter is invisible
+while a stale rating is noticed immediately by the user who just voted. Every
+cache call goes through `_safe_cache`, so a Redis outage degrades to database
+reads rather than an error page. Personalised data is never cached.
+
+**Mixin-composed failure policy** — `config/throttling.py`. `FailOpenMixin` and
+`FailClosedMixin` wrap the same django-ninja throttle classes with opposite
+behaviour when the counter store is unreachable. Reading a page has to survive a
+Redis blip; registration and login must not silently become unlimited, so they
+return a controlled `503`. Each window is its own class with its own scope — two
+instances sharing a scope would count the same requests twice.
+
+**Guard clause for an inverted default** — `accounts/api.py::csrf_rejected` and
+`catalog/api.py::register_view`. django-ninja marks every view `csrf_exempt` and
+re-enables CSRF only inside cookie authentication, so a route without cookie auth
+is unprotected by default. One named helper makes the check explicit and
+greppable instead of leaving it to a framework detail that reads backwards.
+
+**Narrowed query factory** — `catalog/models.py::AnimeDescription.refs()`. The
+view, rating, comment and progress endpoints need only a primary key and a slug.
+`refs()` is the single definition of that projection, so no hot path pulls a
+`TextField` and a poster path out of the database only to discard them.
+
+**Registry** — `config/api.py`. One `NinjaAPI` instance owns the routers, the
+throttling exception handler and the schema gate. `docs_url` and `openapi_url`
+are switched by the same flag, because hiding the docs UI while leaving the
+schema readable would publish the full endpoint map anyway.
+
+**Command** — `accounts/management/commands/purge_expired_registrations.py`.
+Retention is a scheduled operation, not a request. As a management command it
+runs from cron, supports `--dry-run`, and needs no HTTP surface to secure.
+
+### Frontend patterns
+
+**Feature-Sliced layering** — `frontend/src/{app,pages,features,entities,shared}`.
+Dependencies point one way: downward. `shared` knows nothing about the domain,
+`entities` owns a domain object, `features` owns an interaction, `pages` compose
+them. That rule is what keeps the API client free of Steins;Gate specifics and
+lets the rating widget move without dragging its page along.
+
+**Adapter / selector hook** — `frontend/src/entities/anime/model.ts::useAnime`.
+The single place where the static config and the API response are joined by
+`slug`; callers get one object and never learn it came from two sources. Joining
+inside the page would repeat the logic in every consumer and let the copies
+drift — the exact duplication the hybrid model exists to remove.
+
+**Single owner of cache keys** — `animeStatsKey`, in the same module. The page
+and the rating widget request the same key, so React Query issues one network
+call and both render from one cache entry; `useRateAnime` writes the mutation
+result back through that same key. While keys were assembled at each call site, a
+write could land beside the read instead of on top of it.
+
+**Custom hooks as the unit of reuse** — `entities/anime/model.ts`,
+`features/watch/useWatchProgress.ts`, `shared/session/sessionContext.ts`.
+Stateful logic — polling the player, debouncing progress saves, reading the
+session — lives in hooks, so components stay declarative.
+
+**Context and provider, split across files** — `shared/session/sessionContext.ts`
+holds the context and `useSession`; `shared/session/SessionProvider.tsx` holds
+the component. The header, pages and features all need session state at once, and
+threading it through props would touch every layer. The split keeps any single
+file from exporting both a component and a hook, which is what keeps Fast Refresh
+working while developing.
+
+**Error boundary** — `frontend/src/app/AppErrorBoundary.tsx`, wrapping the query
+provider, the session provider and the router. React offers no hook equivalent,
+so this is deliberately the only class component in the codebase: a render error
+anywhere beneath it produces a recovery screen instead of a blank page. The
+component stack is logged in development only.
+
+**Facade over `fetch`** — `frontend/src/shared/api/client.ts`. One function owns
+credentials, the CSRF token round-trip, `204` handling and the translation of a
+failed response into a typed `ApiError` carrying `Retry-After`. Components never
+touch a raw `Response`, and rate-limit handling is written once.
+
+**Generated types as the contract** — `frontend/src/shared/api/types.gen.ts`,
+regenerated by `npm run gen:api`. The build type-checks the frontend against the
+backend's OpenAPI schema, so a field removed server-side breaks `npm run build`
+instead of surfacing as `undefined` in the browser.
+
+### Operational tooling
+
+**Fail-closed validation** — `scripts/projectctl.py`. The launcher refuses to
+start on an occupied port, on `DEBUG=True` in production, on `ALLOWED_HOSTS=*`,
+on a `$` inside a secret that Compose would silently mangle, and on Docker
+resources it cannot prove belong to this checkout. An unparseable
+`docker compose config` counts as a failure, never as "no problems found".
+
 ## Repository layout
 
 ```
@@ -119,11 +295,11 @@ Logs are split by purpose in `backend/logs/` (rotating files): `access.log` (HTT
 │   │   ├── app/         # router, layout
 │   │   ├── pages/       # route components
 │   │   ├── features/    # player, comments, rating, watch, avatar crop
+│   │   ├── entities/    # anime: static config joined with API stats
 │   │   └── shared/      # api client + generated types, session, ui kit
 │   ├── nginx/           # server config + shared security-headers.conf
 │   └── Dockerfile       # node build stage -> nginx
 ├── scripts/             # projectctl: guided setup and stack control
-├── .claude/skills/      # security checklists used when auditing the project
 ├── compose.yaml         # production-shaped stack
 ├── compose.dev.yaml     # dev override: vite HMR + runserver, host-mounted code
 ├── compose.demo.yaml    # demo override: frontend published on loopback only
@@ -157,7 +333,6 @@ Keep the secret URL-safe. `docker compose` treats `$` as variable interpolation,
 | `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | Gmail SMTP credentials (an App Password is required); used in every mode |
 | `HTTPS_ENABLED` | Switches https redirect, Secure cookies and HSTS together; required in production, where a host TLS proxy handles the certificate and HSTS |
 | `API_DOCS_ENABLED` | Serve `/api/docs` and the OpenAPI schema; defaults to `DEBUG` |
-
 | `NINJA_NUM_PROXIES` | Trusted proxy hops in front of Django; `1` in demo, `2` in production (host TLS proxy plus compose nginx) |
 | `SESSION_COOKIE_AGE` | Session lifetime in seconds (default 14 days) |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_SSL`, `EMAIL_TIMEOUT` | SMTP transport; defaults target Gmail over SSL with a 10s timeout |
@@ -279,11 +454,20 @@ hardware-dependent results, reports and cleanup.
 - [x] Application security pass: client-IP trust model, CSRF on unauthenticated routes, upload validation, edge headers and CSP, secret scanning in CI.
 - [x] Production perimeter: loopback-only application port and documented TLS reverse-proxy trust boundary.
 - [x] Verification: backend/frontend lint and tests, deployment checks, secret scanning, `projectctl` lifecycle integration and an isolated Locust baseline.
+- [x] Hybrid data model: the detail endpoint returns dynamic stats only, static metadata is joined into it by an entity-layer hook on the client.
+- [x] Query and image hygiene: composite indexes for the view-deduplication paths, a narrowed projection for hot lookups, and a build context stripped of caches and test tooling.
 
-The following are deliberate **non-goals**, not unfinished defects: a general
-CMS/database catalog for more titles, background mail queues, and scaling beyond
-the measured demo profile. They would change the product scope and should be
-designed as a separate iteration if the project grows.
+Background mail delivery is the **next planned iteration**, not a non-goal:
+`_dispatch_code_delivery` already isolates the send from the transaction, so a
+worker slots in behind it without changing the `201`/`202` contract. Note that
+Redis currently serves the cache, throttle counters and IP lockout on database
+`0`; a broker must be given its own database index so that clearing a queue
+cannot wipe the lockout state.
+
+The following remain deliberate **non-goals**, not unfinished defects: a general
+CMS/database catalog for more titles, and scaling beyond the measured demo
+profile. They would change the product scope and should be designed as a separate
+iteration if the project grows.
 
 ## Author
 
