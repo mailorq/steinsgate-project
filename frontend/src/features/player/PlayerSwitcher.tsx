@@ -204,7 +204,6 @@ export function PlayerSwitcher({ animeSlug, players }: PlayerSwitcherProps) {
   const episodeToggleRef = useRef<HTMLButtonElement | null>(null);
   const episodeControlsRef = useRef<HTMLDivElement | null>(null);
   const episodeRailRef = useRef<HTMLDivElement | null>(null);
-  const switchVersionRef = useRef(0);
   const scrollSaveTimeoutRef = useRef<number | null>(null);
 
   const activePlayer = players.find((player) => player.id === activePlayerId) ?? players[0];
@@ -217,7 +216,6 @@ export function PlayerSwitcher({ animeSlug, players }: PlayerSwitcherProps) {
 
   useEffect(() => {
     return () => {
-      switchVersionRef.current += 1;
       if (scrollSaveTimeoutRef.current !== null) {
         window.clearTimeout(scrollSaveTimeoutRef.current);
       }
@@ -313,25 +311,15 @@ export function PlayerSwitcher({ animeSlug, players }: PlayerSwitcherProps) {
     }
 
     const selection = { player, episode };
-    const switchVersion = switchVersionRef.current + 1;
-    switchVersionRef.current = switchVersion;
 
-    // A cross-origin iframe cannot be paused programmatically. Blank it before
-    // React removes it, then mount only the requested source on the next frame.
     if (iframeRef.current) {
       iframeRef.current.src = "about:blank";
     }
-    setRenderedSource(null);
+    setRenderedSource(source);
     setActivePlayerId(player.id);
     setActiveEpisodeNumber(episode?.number ?? null);
     setEpisodeRailOpen(false);
     saveSelection(animeSlug, selection);
-
-    window.requestAnimationFrame(() => {
-      if (switchVersionRef.current === switchVersion) {
-        setRenderedSource(source);
-      }
-    });
   }
 
   function openEpisodeRail() {
@@ -477,7 +465,6 @@ export function PlayerSwitcher({ animeSlug, players }: PlayerSwitcherProps) {
             src={renderedSource}
             title={activeEpisode ? `${activePlayer.label}: серия ${activeEpisode.number}` : activePlayer.label}
             allow="autoplay; fullscreen; picture-in-picture"
-            allowFullScreen
             referrerPolicy="strict-origin-when-cross-origin"
             className="player-embed absolute inset-0 h-full w-full"
           />
