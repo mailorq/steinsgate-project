@@ -4,7 +4,7 @@
 # что меняется относительно боевого compose.yaml:
 #  - DEBUG=False + HTTPS_ENABLED=False: прод-подобная производительность без редиректа на https (nginx здесь только http, иначе цикл редиректов);
 #  - лимиты подняты до неограничивающих - измеряем бд и приложение, а не rate-limiter (он проверяется отдельно);
-#  - почта на locmem - регистрация не шлет реальных писем и не ждет SMTP;
+#  - почта на locmem у воркера: регистрация не шлет реальных писем;
 #  - LOADTEST=1 - маркер для seed_loadtest / profile_queries;
 services:
   backend:
@@ -12,8 +12,7 @@ services:
       LOADTEST: "1"
       DEBUG: "False"
       HTTPS_ENABLED: "False"
-      CSRF_TRUSTED_ORIGINS: "http://localhost:4173,http://127.0.0.1:4173"
-      EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"
+      CSRF_TRUSTED_ORIGINS: "http://localhost:${APP_PORT:-4273},http://127.0.0.1:${APP_PORT:-4273}"
       API_AUTH_THROTTLE: "1000000/m"
       API_AUTH_THROTTLE_SUSTAINED: "1000000/h"
       API_WRITE_THROTTLE: "1000000/m"
@@ -23,3 +22,7 @@ services:
       # конкурентность под нагрузку: 4 воркера x 8 потоков = до 32 запросов
       GUNICORN_WORKERS: "4"
       GUNICORN_THREADS: "8"
+
+  celery-worker:
+    environment:
+      EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"

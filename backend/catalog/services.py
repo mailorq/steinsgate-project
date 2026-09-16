@@ -107,8 +107,17 @@ def rate_anime(*, user, anime, rating: int) -> float | None:
     AnimeRating.objects.update_or_create(
         user=user, anime=anime, defaults={"rating": rating}
     )
-    _safe_cache(cache.delete, _avg_rating_key(anime))
-    return average_rating(anime)
+    value = _compute_average(anime)
+    _safe_cache(cache.set, _avg_rating_key(anime), _encode_average(value), AVG_RATING_TTL)
+    return value
+
+
+def _compute_average(anime) -> float | None:
+    return anime.ratings.aggregate(Avg("rating"))["rating__avg"]
+
+
+def _encode_average(value: float | None):
+    return value if value is not None else "none"
 
 
 def average_rating(anime) -> float | None:
@@ -117,8 +126,9 @@ def average_rating(anime) -> float | None:
     if cached is not None:
         return cached if cached != "none" else None
 
-    value = anime.ratings.aggregate(Avg("rating"))["rating__avg"]
-    _safe_cache(cache.set, key, value if value is not None else "none", AVG_RATING_TTL)
+    value = _compute_average(anime)
+    # add, а не set: чтение, посчитанное до коммита голоса, не перетирает свежее значение
+    _safe_cache(cache.add, key, _encode_average(value), AVG_RATING_TTL)
     return value
 
 

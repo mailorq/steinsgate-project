@@ -1,6 +1,7 @@
 import hmac
 import math
 import secrets
+import uuid
 from datetime import timedelta
 from hashlib import sha256
 
@@ -51,9 +52,24 @@ class EmailVerificationCode(models.Model):
     resend_window_started_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(default=timezone.now)
     last_sent_at = models.DateTimeField(default=timezone.now)
+    dispatch_token = models.UUIDField(null=True, blank=True)
+    queued_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivery_failed_at = models.DateTimeField(null=True, blank=True)
+
+    DISPATCH_FIELDS = (
+        "dispatch_token", "last_sent_at", "queued_at", "delivered_at", "delivery_failed_at",
+    )
 
     def __str__(self):
         return f"{self.user.username} - {self.created_at}"
+
+    def start_dispatch(self, now) -> None:
+        self.dispatch_token = uuid.uuid4()
+        self.last_sent_at = now
+        self.queued_at = None
+        self.delivered_at = None
+        self.delivery_failed_at = None
 
     def rotate_code(self) -> str:
         self.code_nonce = secrets.token_urlsafe(32)
@@ -76,6 +92,10 @@ class EmailVerificationCode(models.Model):
     @property
     def is_expired(self) -> bool:
         return timezone.now() > self.created_at + self.TTL
+
+    @property
+    def awaits_delivery(self) -> bool:
+        return self.delivered_at is None and self.delivery_failed_at is None and not self.is_expired
 
     @property
     def attempts_exhausted(self) -> bool:

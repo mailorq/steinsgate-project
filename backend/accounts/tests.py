@@ -2,7 +2,7 @@ import io
 import shutil
 import tempfile
 from datetime import timedelta
-from smtplib import SMTPException
+from smtplib import SMTPServerDisconnected
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -10,7 +10,7 @@ from django.core import mail
 from django.core.cache import cache
 from django.core.cache.backends.locmem import LocMemCache
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection, transaction
+from django.db import connection
 from django.test import Client, RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from PIL import Image
@@ -279,12 +279,13 @@ class AuthApiTest(TransactionTestCase):
         response = self.register()
 
         self.assertEqual(response.status_code, 201)
-        self.assertTrue(response.json()['delivery_confirmed'])
+        self.assertEqual(set(response.json()), {'detail', 'resend_available_in'})
         self.assertGreater(response.json()['resend_available_in'], 0)
         user = User.objects.get(username='kurisu')
         self.assertFalse(user.is_active)
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn('verification', mail.outbox[0].subject.lower())
+        self.assertIsNotNone(user.verification_code.delivered_at)
 
     def test_register_returns_retry_after_when_recipient_quota_is_exhausted(self):
         EmailDeliveryQuota.objects.create(
@@ -506,52 +507,6 @@ class CsrfEnforcementTest(TransactionTestCase):
         self.assertEqual(response.status_code, 201)
 
 
-class EmailDeliveryFailureTest(TransactionTestCase):
-    """SMTP-сбой не удаляет pending-пользователя: письмо могло дойти при таймауте."""
-
-    def test_smtp_failure_returns_202_and_keeps_user(self):
-        client = Client()
-        payload = {
-            'username': 'daru',
-            'email': 'daru@gmail.com',
-            'password': 'complex_pass_123',
-        }
-
-        with patch('accounts.services.send_mail', side_effect=SMTPException('smtp is down')):
-            response = client.post(
-                '/api/auth/register',
-                payload,
-                content_type='application/json',
-                **csrf_headers(client),
-            )
-
-        self.assertEqual(response.status_code, 202)
-        self.assertFalse(response.json()['delivery_confirmed'])
-        self.assertGreater(response.json()['resend_available_in'], 0)
-        user = User.objects.get(username='daru')
-        self.assertFalse(user.is_active)
-        self.assertTrue(EmailVerificationCode.objects.filter(user=user).exists())
-        self.assertEqual(client.session['pending_user_id'], user.pk)
-
-    def test_connection_refused_keeps_user(self):
-        with patch('accounts.services.send_mail', side_effect=ConnectionRefusedError()):
-            result = services.register_user(
-                username='daru', email='daru@gmail.com', password='complex_pass_123'
-            )
-
-        self.assertFalse(result.delivered)
-        self.assertTrue(User.objects.filter(pk=result.user.pk).exists())
-
-    def test_mail_backend_returning_zero_keeps_user_and_reports_unconfirmed_delivery(self):
-        with patch('accounts.services.send_mail', return_value=0):
-            result = services.register_user(
-                username='daru', email='daru@gmail.com', password='complex_pass_123'
-            )
-
-        self.assertFalse(result.delivered)
-        self.assertTrue(User.objects.filter(pk=result.user.pk, is_active=False).exists())
-
-
 class EmailDeliveryTransactionTest(TransactionTestCase):
     """TransactionTestCase не оборачивает тест во внешнюю atomic-транзакцию."""
 
@@ -568,21 +523,6 @@ class EmailDeliveryTransactionTest(TransactionTestCase):
             )
 
         self.assertFalse(seen['in_atomic_block'])
-
-
-class DeferredEmailDeliveryTest(TestCase):
-    def test_outer_transaction_defers_delivery_until_real_commit(self):
-        with self.captureOnCommitCallbacks(execute=True) as callbacks:
-            with transaction.atomic():
-                result = services.register_user(
-                    username='daru', email='daru@gmail.com', password='complex_pass_123'
-                )
-                self.assertTrue(result.delivery_scheduled)
-                self.assertFalse(result.delivered)
-                self.assertEqual(len(mail.outbox), 0)
-
-        self.assertEqual(len(callbacks), 1)
-        self.assertEqual(len(mail.outbox), 1)
 
 
 class FailingCache:
@@ -639,12 +579,19 @@ class ResendVerificationServiceTest(TransactionTestCase):
         record.save(update_fields=['last_sent_at'])
         return record
 
+    def assert_delivered(self):
+        record = EmailVerificationCode.objects.get(user=self.user)
+        self.assertIsNotNone(record.delivered_at)
+        return record
+
     def test_resend_reuses_current_code_when_the_previous_delivery_may_have_succeeded(self):
         self.make_resendable()
 
-        result = services.resend_verification(user=self.user)
+        first_token = self.user.verification_code.dispatch_token
 
-        self.assertTrue(result.delivered)
+        services.resend_verification(user=self.user)
+
+        self.assertNotEqual(self.assert_delivered().dispatch_token, first_token)
         self.assertEqual(code_from_email(), self.initial_code)
         services.verify_email(user=self.user, code=self.initial_code)
         self.user.refresh_from_db()
@@ -667,9 +614,9 @@ class ResendVerificationServiceTest(TransactionTestCase):
         record.save(update_fields=['created_at'])
 
         with patch('accounts.models.secrets.token_urlsafe', return_value='rotated-nonce'):
-            result = services.resend_verification(user=self.user)
+            services.resend_verification(user=self.user)
 
-        self.assertTrue(result.delivered)
+        self.assert_delivered()
         new_code = code_from_email()
         record.refresh_from_db()
         self.assertNotEqual(record.code_hash, old_hash)
@@ -682,11 +629,11 @@ class ResendVerificationServiceTest(TransactionTestCase):
         record = self.make_resendable()
         old_hash = record.code_hash
 
-        with patch('accounts.services.send_mail', side_effect=SMTPException('timeout')):
-            result = services.resend_verification(user=self.user)
+        with patch('accounts.services.send_mail', side_effect=SMTPServerDisconnected('closed')):
+            services.resend_verification(user=self.user)
 
         record.refresh_from_db()
-        self.assertFalse(result.delivered)
+        self.assertIsNotNone(record.delivery_failed_at)
         self.assertEqual(record.code_hash, old_hash)
         services.verify_email(user=self.user, code=self.initial_code)
 
@@ -723,20 +670,19 @@ class ResendVerificationServiceTest(TransactionTestCase):
         )
         record.save(update_fields=['resend_count', 'resend_window_started_at'])
 
-        result = services.resend_verification(user=self.user)
+        services.resend_verification(user=self.user)
 
-        record.refresh_from_db()
-        self.assertTrue(result.delivered)
+        record = self.assert_delivered()
         self.assertEqual(record.resend_count, 1)
 
     @override_settings(SECRET_KEY='rotated-verification-key-for-test-only')
     def test_resend_rotates_code_after_secret_key_change(self):
         self.make_resendable()
 
-        result = services.resend_verification(user=self.user)
+        services.resend_verification(user=self.user)
 
+        self.assert_delivered()
         new_code = code_from_email()
-        self.assertTrue(result.delivered)
         self.assertNotEqual(new_code, self.initial_code)
         services.verify_email(user=self.user, code=new_code)
 
@@ -747,10 +693,9 @@ class ResendVerificationServiceTest(TransactionTestCase):
         record.last_sent_at = timezone.now()
         record.save(update_fields=['code_hash', 'code_nonce', 'last_sent_at'])
 
-        result = services.resend_verification(user=self.user)
+        services.resend_verification(user=self.user)
 
-        record.refresh_from_db()
-        self.assertTrue(result.delivered)
+        record = self.assert_delivered()
         self.assertTrue(record.code_nonce)
         self.assertTrue(record.matches(code_from_email()))
 

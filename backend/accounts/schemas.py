@@ -36,6 +36,5 @@ class MessageOut(Schema):
     detail: str
 
 
-class VerificationDeliveryOut(MessageOut):
-    delivery_confirmed: bool
+class VerificationDispatchOut(MessageOut):
     resend_available_in: int

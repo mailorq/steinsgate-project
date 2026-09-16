@@ -39,6 +39,8 @@ INTERPOLATED_SECRETS = (
 )
 OPTIONAL_SECRETS = ("EMAIL_HOST_PASSWORD",)
 PUBLISHING_SERVICES = {"frontend"}
+BACKGROUND_SERVICES = {"celery-worker": "healthy", "celery-beat": "running"}
+FAILED_SERVICE_STATES = {"exited", "dead", "restarting", "unhealthy"}
 DEFAULT_PORT = 4173
 HEALTH_TIMEOUT = 180
 DOCKER_TIMEOUT = 120
@@ -345,8 +347,8 @@ def validate_env_values(env: dict[str, str], *, allow_debug: bool) -> tuple[list
         )
     if not env.get("EMAIL_HOST_USER") or not env.get("EMAIL_HOST_PASSWORD"):
         warnings.append(
-            "EMAIL_HOST_USER/EMAIL_HOST_PASSWORD пусты — письмо не подтвердится; "
-            "регистрация вернёт 202 и потребуется повторная отправка"
+            "EMAIL_HOST_USER/EMAIL_HOST_PASSWORD пусты: воркер не сможет отправить "
+            "код подтверждения, отправка будет отмечена как неудачная"
         )
     if mode == "production":
         warnings.append(
@@ -689,6 +691,40 @@ def wait_for_health(port: int, timeout: int) -> None:
     raise CtlError(f"Сервис не ответил за {timeout}с (последняя причина: {last_reason})")
 
 
+def background_service_states() -> dict[str, str]:
+    result = compose("ps", "--all", "--format", "json", capture=True)
+    if result.returncode != 0:
+        raise CtlError("docker compose ps завершился с ошибкой")
+    return {
+        item.get("Service", ""): item.get("Health") or item.get("State") or ""
+        for item in iter_json_objects(result.stdout)
+    }
+
+
+def background_service_problems(states: dict[str, str]) -> dict[str, str]:
+    return {
+        name: states.get(name) or "контейнер не создан"
+        for name, expected in BACKGROUND_SERVICES.items()
+        if states.get(name) != expected
+    }
+
+
+def wait_for_background_services(timeout: int) -> None:
+    deadline = time.monotonic() + timeout
+    info("Жду готовности " + ", ".join(BACKGROUND_SERVICES))
+    while True:
+        problems = background_service_problems(background_service_states())
+        if not problems:
+            ok("Celery worker и beat работают")
+            return
+        failed = any(state in FAILED_SERVICE_STATES for state in problems.values())
+        if failed or time.monotonic() >= deadline:
+            compose("logs", "--tail", "40", *problems)
+            details = "; ".join(f"{name}: {state}" for name, state in problems.items())
+            raise CtlError(f"Фоновые сервисы не запустились ({details})")
+        time.sleep(2)
+
+
 # команды
 
 
@@ -881,6 +917,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         )
 
     wait_for_health(port, args.timeout)
+    wait_for_background_services(args.timeout)
     ok(f"Готово: http://localhost:{port} (публикация: 127.0.0.1)")
     return 0
 
@@ -929,6 +966,12 @@ def cmd_status(_args: argparse.Namespace) -> int:
             ok(f"HTTP {response.status} от {HEALTH_PATH}")
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as error:
         raise CtlError(f"{HEALTH_PATH} не отвечает на порту {port}") from error
+
+    problems = background_service_problems(background_service_states())
+    if problems:
+        details = "; ".join(f"{name}: {state}" for name, state in problems.items())
+        raise CtlError(f"Фоновые сервисы не в рабочем состоянии ({details})")
+    ok("Celery worker и beat работают")
     return 0
 
 

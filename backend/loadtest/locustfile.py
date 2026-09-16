@@ -230,7 +230,7 @@ class Viewer(HttpUser):
             name="/api/auth/register",
             catch_response=True,
         ) as resp:
-            if resp.status_code in {201, 202}:
+            if resp.status_code == 201:
                 resp.success()
             else:
                 resp.failure(f"Регистрация: {resp.status_code}")

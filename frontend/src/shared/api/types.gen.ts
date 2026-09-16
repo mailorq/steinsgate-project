@@ -314,12 +314,10 @@ export interface components {
             /** Avatar Url */
             avatar_url: string | null;
         };
-        /** VerificationDeliveryOut */
-        VerificationDeliveryOut: {
+        /** VerificationDispatchOut */
+        VerificationDispatchOut: {
             /** Detail */
             detail: string;
-            /** Delivery Confirmed */
-            delivery_confirmed: boolean;
             /** Resend Available In */
             resend_available_in: number;
         };
@@ -361,14 +359,7 @@ export interface components {
             /** Name */
             name: string;
         };
-        /**
-         * AnimeStatsOut
-         * @description Только динамика тайтла.
-         *
-         *     Название, сезон, тип, жанры и описание не меняются без релиза, поэтому
-         *     живут в бандле фронтенда и не гоняются по сети на каждый просмотр.Slug
-         *     остаётся, чтобы клиент мог сшить этот ответ со статической записью.
-         */
+        /** AnimeStatsOut */
         AnimeStatsOut: {
             /** Slug */
             slug: string;
@@ -533,16 +524,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VerificationDeliveryOut"];
-                };
-            };
-            /** @description Accepted */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VerificationDeliveryOut"];
+                    "application/json": components["schemas"]["VerificationDispatchOut"];
                 };
             };
             /** @description Bad Request */
@@ -598,16 +580,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VerificationDeliveryOut"];
-                };
-            };
-            /** @description Accepted */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VerificationDeliveryOut"];
+                    "application/json": components["schemas"]["VerificationDispatchOut"];
                 };
             };
             /** @description Bad Request */

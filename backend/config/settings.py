@@ -10,6 +10,7 @@ import secrets
 import stat
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -178,8 +179,11 @@ SECURE_HSTS_PRELOAD = HTTPS_ENABLED
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024     # 8 MB
 
+# в контейнерах логи идут в stdout, ротацию выполняет драйвер логирования докер
+LOG_TO_FILES = os.environ.get("LOG_TO_FILES", "True").lower() in ("true", "1", "yes")
 LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+if LOG_TO_FILES:
+    LOG_DIR.mkdir(exist_ok=True)
 
 
 def _log_file(filename: str, level: str = "INFO") -> dict:
@@ -194,15 +198,19 @@ def _log_file(filename: str, level: str = "INFO") -> dict:
     }
 
 
+def _handlers(*names: str) -> list[str]:
+    return [name for name in names if LOG_TO_FILES or not name.endswith("_file")]
+
+
 _APP_LOGGER = {
-    "handlers": ["application_file", "console"],
+    "handlers": _handlers("application_file", "console"),
     "level": "INFO",
     "propagate": False,
 }
 
-# access.log — HTTP-доступ (в проде его пишет gunicorn, здесь — dev-сервер);
-# application.log — доменные события приложений; security.log — блокировки,
-# CSRF и спам; error.log — только ERROR и выше отовсюду; worker.log — gunicorn
+# access.log пишет только runserver, gunicorn выводит доступ в stdout
+# application.log - доменные события, security.log - блокировки, CSRF и спам,
+# error.log - ERROR и выше из всех логгеров
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -218,25 +226,31 @@ LOGGING = {
             "class": "logging.StreamHandler",
             "formatter": "standard",
         },
-        "access_file": _log_file("access.log"),
-        "application_file": _log_file("application.log"),
-        "security_file": _log_file("security.log"),
-        "error_file": _log_file("error.log", level="ERROR"),
+        **(
+            {
+                "access_file": _log_file("access.log"),
+                "application_file": _log_file("application.log"),
+                "security_file": _log_file("security.log"),
+                "error_file": _log_file("error.log", level="ERROR"),
+            }
+            if LOG_TO_FILES
+            else {}
+        ),
     },
 
     "loggers": {
         "django.server": {
-            "handlers": ["access_file", "console"],
+            "handlers": _handlers("access_file", "console"),
             "level": "INFO",
             "propagate": False,
         },
         "django.security": {
-            "handlers": ["security_file", "console"],
+            "handlers": _handlers("security_file", "console"),
             "level": "WARNING",
             "propagate": False,
         },
         "security": {
-            "handlers": ["security_file", "console"],
+            "handlers": _handlers("security_file", "console"),
             "level": "INFO",
             "propagate": False,
         },
@@ -247,7 +261,7 @@ LOGGING = {
     },
 
     "root": {
-        "handlers": ["console", "error_file"],
+        "handlers": _handlers("console", "error_file"),
         "level": "INFO",
     },
 }
@@ -348,6 +362,46 @@ else:
         }
     }
 
+# без брокера (локальный запуск без Docker) задачи выполняются синхронно в процессе
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "")
+CELERY_TASK_ALWAYS_EAGER = not CELERY_BROKER_URL
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 500
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+CELERY_TASK_TIME_LIMIT = 60
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# одна быстрая попытка публикации: запрос не ждёт недоступный брокер,
+# неопубликованное письмо отправит сверка outbox
+CELERY_TASK_PUBLISH_RETRY = False
+CELERY_BROKER_CONNECTION_TIMEOUT = 1
+# visibility_timeout больше максимальной задержки ретрая и лимита времени задачи,
+# иначе redis выдаст отложенную задачу второму процессу
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 3600, "socket_connect_timeout": 1}
+CELERY_TASK_DEFAULT_QUEUE = "maintenance"
+CELERY_TASK_ROUTES = {
+    "accounts.tasks.send_verification_code": {"queue": "email"},
+    "accounts.tasks.reconcile_verification_delivery": {"queue": "email"},
+}
+CELERY_BEAT_SCHEDULE = {
+    "reconcile-verification-delivery": {
+        "task": "accounts.tasks.reconcile_verification_delivery",
+        "schedule": timedelta(minutes=1),
+    },
+    "purge-expired-registrations": {
+        "task": "accounts.tasks.purge_expired_registrations",
+        "schedule": timedelta(hours=1),
+    },
+    "clear-expired-sessions": {
+        "task": "accounts.tasks.clear_expired_sessions",
+        "schedule": timedelta(days=1),
+    },
+}
+
 # Лимиты запросов к API: два окна на группу — всплеск и длинная дистанция
 API_AUTH_THROTTLE = os.environ.get("API_AUTH_THROTTLE", "15/m")
 API_AUTH_THROTTLE_SUSTAINED = os.environ.get("API_AUTH_THROTTLE_SUSTAINED", "100/h")
@@ -381,6 +435,8 @@ if TESTING:
     API_VIEW_THROTTLE = "10000/m"
     API_VIEW_THROTTLE_SUSTAINED = "10000/h"
     API_RESEND_THROTTLE = "10000/h"
+    CELERY_BROKER_URL = "memory://"
+    CELERY_TASK_ALWAYS_EAGER = True
 
 
 # Password validation

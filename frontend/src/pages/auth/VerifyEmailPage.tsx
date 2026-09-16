@@ -9,7 +9,6 @@ import { FormCard } from "@/shared/ui/FormCard";
 const CODE_LENGTH = 6;
 
 interface VerificationNavigationState {
-  deliveryConfirmed?: boolean;
   resendAvailableIn?: number;
 }
 
@@ -29,9 +28,6 @@ export function VerifyEmailPage() {
       : 0,
   );
   const inputsRef = useRef<(HTMLInputElement | null)[]>([]);
-  const [hasUnconfirmedDelivery, setHasUnconfirmedDelivery] = useState(
-    navigationState?.deliveryConfirmed === false,
-  );
 
   const code = digits.join("");
   const isComplete = code.length === CODE_LENGTH && /^\d{6}$/.test(code);
@@ -110,13 +106,8 @@ export function VerifyEmailPage() {
     setResendMessage(null);
     try {
       const result = await authApi.resendVerification();
-      setHasUnconfirmedDelivery(!result.delivery_confirmed);
       setResendCooldown(result.resend_available_in);
-      setResendMessage(
-        result.delivery_confirmed
-          ? "Код отправлен. Проверьте входящие и папку «Спам»."
-          : "Код сохранён, но доставку не удалось подтвердить. Попробуйте ещё раз позже.",
-      );
+      setResendMessage("Код отправлен. Проверьте входящие и папку «Спам».");
       setDigits(Array(CODE_LENGTH).fill(""));
       inputsRef.current[0]?.focus();
     } catch (requestError) {
@@ -136,12 +127,6 @@ export function VerifyEmailPage() {
       <p className="mb-6 text-center text-sm leading-relaxed text-zinc-500">
         Enter the 6-digit code from the D-Mail. If it does not arrive, request another send below.
       </p>
-
-      {hasUnconfirmedDelivery && (
-        <div className="mb-4 text-center text-sm text-amber-300" role="status">
-          Регистрация сохранена, но отправку письма не удалось подтвердить. Попробуйте отправить код ещё раз.
-        </div>
-      )}
 
       {error && <div className="mb-4 text-center text-sm text-red-500">{error}</div>}
       {resendMessage && <div className="mb-4 text-center text-sm text-zinc-400" role="status">{resendMessage}</div>}

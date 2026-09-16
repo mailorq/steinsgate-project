@@ -6,7 +6,7 @@ type Schemas = components["schemas"];
 export type UserOut = Schemas["UserOut"];
 export type SessionOut = Schemas["SessionOut"];
 export type MessageOut = Schemas["MessageOut"];
-export type VerificationDeliveryOut = Schemas["VerificationDeliveryOut"];
+export type VerificationDispatchOut = Schemas["VerificationDispatchOut"];
 export type AnimeStatsOut = Schemas["AnimeStatsOut"];
 export type RatingOut = Schemas["RatingOut"];
 export type CommentOut = Schemas["CommentOut"];
@@ -19,9 +19,9 @@ export { ApiError } from "./client";
 export const authApi = {
   session: (signal?: AbortSignal) => request<SessionOut>("/auth/session", { signal }),
   register: (payload: { username: string; email: string; password: string }) =>
-    request<VerificationDeliveryOut>("/auth/register", { method: "POST", json: payload }),
+    request<VerificationDispatchOut>("/auth/register", { method: "POST", json: payload }),
   resendVerification: () =>
-    request<VerificationDeliveryOut>("/auth/resend-verification", { method: "POST" }),
+    request<VerificationDispatchOut>("/auth/resend-verification", { method: "POST" }),
   verifyEmail: (code: string) =>
     request<SessionOut>("/auth/verify-email", { method: "POST", json: { code } }),
   login: (payload: { username: string; password: string }) =>

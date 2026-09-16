@@ -3,12 +3,14 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory, TestCase
 from ninja.conf import settings as ninja_settings
 
+from . import celery as celery_app
 from . import settings as project_settings
 from .network import get_client_ip
 
@@ -39,6 +41,26 @@ class ClientIpTest(TestCase):
         request = self._request("1.2.3.4, 203.0.113.7, 10.0.0.9")
         with patch.object(ninja_settings, "NUM_PROXIES", 2):
             self.assertEqual(get_client_ip(request), "203.0.113.7")
+
+
+class WorkerHeartbeatTest(TestCase):
+
+    def test_file_exists_only_while_the_consumer_runs(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            celery_app, "HEARTBEAT_FILE", Path(directory) / "worker.heartbeat"
+        ):
+            timer = Mock()
+            consumer = SimpleNamespace(timer=timer)
+            step = celery_app.Heartbeat(consumer)
+
+            step.start(consumer)
+            self.assertTrue(celery_app.HEARTBEAT_FILE.exists())
+            timer.call_repeatedly.assert_called_once()
+            self.assertEqual(timer.call_repeatedly.call_args.args[0], celery_app.HEARTBEAT_INTERVAL)
+
+            step.stop(consumer)
+            timer.call_repeatedly.return_value.cancel.assert_called_once()
+            self.assertFalse(celery_app.HEARTBEAT_FILE.exists())
 
 
 @unittest.skipIf(os.name == "nt", "Unix file permissions are not portable on Windows")
