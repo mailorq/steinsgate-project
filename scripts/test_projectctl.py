@@ -27,6 +27,9 @@ SPEC = importlib.util.spec_from_file_location(
 ctl = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ctl)
 
+# сервисы с env_file: .env; интеграционный стек переопределяет им файл окружения
+DJANGO_SERVICES = ("migrate", "backend", "celery-worker", "celery-beat")
+
 
 def valid_env(**overrides: str) -> dict[str, str]:
     env = {
@@ -562,6 +565,17 @@ class ExitCodeTest(unittest.TestCase):
 
         urlopen.assert_not_called()
 
+    def test_status_fails_when_worker_is_not_healthy(self):
+        with mock.patch.object(ctl, "require_docker"), \
+             mock.patch.object(ctl, "check_ownership", return_value=[]), \
+             mock.patch.object(ctl, "compose", return_value=completed(0)), \
+             mock.patch.object(ctl, "project_publishes_port", return_value=True), \
+             mock.patch.object(ctl, "read_env", return_value={"APP_PORT": "4173"}), \
+             mock.patch.object(ctl.urllib.request, "urlopen"), \
+             mock.patch.object(ctl, "background_service_states",
+                               return_value={"celery-worker": "unhealthy", "celery-beat": "running"}):
+            self.assertEqual(ctl.main(["status"]), 1)
+
     def test_logs_fails_when_compose_fails(self):
         with mock.patch.object(ctl, "require_docker"), \
              mock.patch.object(ctl, "require_env"), \
@@ -767,7 +781,8 @@ class FailedUpRecoveryTest(unittest.TestCase):
              mock.patch.object(ctl, "compose", return_value=completed(0)), \
              mock.patch.object(ctl, "record_ownership"), \
              mock.patch.object(ctl, "project_publishes_port", return_value=True), \
-             mock.patch.object(ctl, "wait_for_health"):
+             mock.patch.object(ctl, "wait_for_health"), \
+             mock.patch.object(ctl, "wait_for_background_services"):
             self.assertEqual(ctl.cmd_up(args), 0)
 
         validate_mock.assert_called_once_with(args, check_port=False)
@@ -788,6 +803,58 @@ class FailedUpRecoveryTest(unittest.TestCase):
         with mock.patch.object(ctl, "require_docker"),              mock.patch.object(ctl, "require_env"),              mock.patch.object(ctl, "project_containers", return_value=[]),              mock.patch.object(ctl, "project_volumes", return_value=["v"]),              mock.patch.object(ctl, "project_networks", return_value=[]),              mock.patch.object(ctl, "workspace_owns_project", return_value=True),              mock.patch.object(ctl, "verify_recorded_resources", return_value=[]),              mock.patch.object(ctl, "compose", return_value=completed(0)) as compose_mock:
             self.assertEqual(ctl.main(["down"]), 0)
             compose_mock.assert_called_once()
+
+
+class BackgroundServicesTest(unittest.TestCase):
+
+    READY = {"celery-worker": "healthy", "celery-beat": "running"}
+
+    def test_states_prefer_health_over_container_state(self):
+        items = (
+            {"Service": "celery-worker", "State": "running", "Health": "starting"},
+            {"Service": "celery-beat", "State": "running", "Health": ""},
+            {"Service": "migrate", "State": "exited", "Health": ""},
+        )
+        output = completed(0, "\n".join(json.dumps(item) for item in items))
+        with mock.patch.object(ctl, "compose", return_value=output):
+            states = ctl.background_service_states()
+
+        self.assertEqual(
+            states, {"celery-worker": "starting", "celery-beat": "running", "migrate": "exited"}
+        )
+
+    def test_unready_and_missing_services_are_reported(self):
+        problems = ctl.background_service_problems({"celery-worker": "starting"})
+
+        self.assertEqual(
+            problems, {"celery-worker": "starting", "celery-beat": "контейнер не создан"}
+        )
+
+    def test_wait_returns_once_worker_becomes_healthy(self):
+        states = [{**self.READY, "celery-worker": "starting"}, self.READY]
+        with mock.patch.object(ctl, "background_service_states", side_effect=states), \
+             mock.patch.object(ctl.time, "sleep"):
+            ctl.wait_for_background_services(timeout=30)
+
+    def test_wait_fails_fast_when_worker_crashes_on_start(self):
+        with mock.patch.object(ctl, "background_service_states",
+                               return_value={**self.READY, "celery-worker": "restarting"}), \
+             mock.patch.object(ctl, "compose") as compose_mock, \
+             mock.patch.object(ctl.time, "sleep") as sleep_mock:
+            with self.assertRaises(ctl.CtlError):
+                ctl.wait_for_background_services(timeout=300)
+
+        sleep_mock.assert_not_called()
+        compose_mock.assert_called_once_with("logs", "--tail", "40", "celery-worker")
+
+    def test_wait_times_out_when_worker_never_becomes_healthy(self):
+        with mock.patch.object(ctl, "background_service_states",
+                               return_value={**self.READY, "celery-worker": "starting"}), \
+             mock.patch.object(ctl, "compose"), \
+             mock.patch.object(ctl.time, "sleep"), \
+             mock.patch.object(ctl.time, "monotonic", side_effect=[0, 0, 31]):
+            with self.assertRaises(ctl.CtlError):
+                ctl.wait_for_background_services(timeout=30)
 
 
 class PreflightTest(unittest.TestCase):
@@ -899,15 +966,10 @@ class TempProjectMixin:
             cls.env_file,
             ctl.render_env(mode="demo", host="", port=cls.port, debug=False, https=False),
         )
-        cls.overlay.write_text(
-            "\n".join([
-                "services:",
-                "  backend:",
-                f"    env_file: !override [{cls.env_file.as_posix()}]",
-                "",
-            ]),
-            encoding="utf-8",
-        )
+        overlay = ["services:"]
+        for service in DJANGO_SERVICES:
+            overlay += [f"  {service}:", f"    env_file: !override [{cls.env_file.as_posix()}]"]
+        cls.overlay.write_text("\n".join(overlay) + "\n", encoding="utf-8")
 
         ctl.PROJECT_NAME = cls.project
         ctl.STATE_FILE = f".projectctl-state-{cls.project}.json"
@@ -996,6 +1058,9 @@ class DockerUpDownIntegrationTest(TempProjectMixin, unittest.TestCase):
         try:
             self.assertEqual(ctl.main(["up", "--timeout", "300"]), 0)
 
+            states = ctl.background_service_states()
+            self.assertEqual(ctl.background_service_problems(states), {})
+            self.assertEqual(states.get("migrate"), "exited")
             self.assertTrue(ctl.project_publishes_port(self.port))
             self.assertTrue(ctl.workspace_owns_project())
             recorded = ctl.read_state()["resources"]["volumes"]
