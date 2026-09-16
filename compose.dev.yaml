@@ -2,12 +2,11 @@
 # docker compose -f compose.yaml -f compose.dev.yaml up
 # Фронт: vite dev server с HMR на http://localhost:5173
 # Бэк: runserver с автоперезагрузкой при изменении кода
+# Воркер и beat читают код с хоста, после изменений: docker compose restart celery-worker celery-beat
 services:
   backend:
     build: ./backend
-    command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py runserver 0.0.0.0:8000"
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
     environment:
       DB_ENGINE: django.db.backends.postgresql
       DB_HOST: db
@@ -17,6 +16,18 @@ services:
     volumes:
       - ./backend:/app
       - django_media:/app/media
+
+  migrate:
+    volumes:
+      - ./backend:/app
+
+  celery-worker:
+    volumes:
+      - ./backend:/app
+
+  celery-beat:
+    volumes:
+      - ./backend:/app
 
   frontend:
     build: !reset null

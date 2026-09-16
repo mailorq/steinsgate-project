@@ -4,6 +4,22 @@ x-default-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+x-django: &django
+  build: ./backend
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+  env_file: .env
+  environment:
+    DB_ENGINE: django.db.backends.postgresql
+    DB_HOST: db
+    DB_PORT: 5432
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis-broker:6379/0
+
 services:
   db:
     image: postgres:16-alpine
@@ -30,6 +46,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "volatile-lru", "--save", "", "--appendonly", "no"]
     security_opt:
       - no-new-privileges:true
     logging: *default-logging
@@ -41,32 +58,103 @@ services:
     networks:
       - data
 
-  backend:
-    build: ./backend
+  # separate instance: queues need noeviction, and Redis applies maxmemory and
+  # the eviction policy to the whole instance, not to a logical database.
+  redis-broker:
+    image: redis:7-alpine
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
     logging: *default-logging
-    env_file: .env
-    environment:
-      DB_ENGINE: django.db.backends.postgresql
-      DB_HOST: db
-      DB_PORT: 5432
-      REDIS_URL: redis://redis:6379/0
-    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --worker-class gthread --workers $${GUNICORN_WORKERS:-3} --threads $${GUNICORN_THREADS:-4} --max-requests $${GUNICORN_MAX_REQUESTS:-2000} --max-requests-jitter 200 --access-logfile - --error-logfile -"
     volumes:
-      - django_static:/app/staticfiles
-      - django_media:/app/media
-      - django_logs:/app/logs
+      - redis_broker_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 192M
+    networks:
+      - data
+
+  migrate:
+    <<: *django
+    restart: "no"
+    command: ["python", "manage.py", "migrate", "--noinput"]
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - data
+
+  backend:
+    <<: *django
+    command: sh -c "python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --worker-class gthread --workers $${GUNICORN_WORKERS:-3} --threads $${GUNICORN_THREADS:-4} --max-requests $${GUNICORN_MAX_REQUESTS:-0} --access-logfile - --error-logfile -"
+    volumes:
+      - django_static:/app/staticfiles
+      - django_media:/app/media
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+    # edge is not internal, so a stopped broker name is forwarded to external DNS;
+    # without a short timeout a failed publish waits 4 seconds for the resolver.
+    dns_opt:
+      - timeout:1
+      - attempts:1
     networks:
       - edge
+      - data
+
+  celery-worker:
+    <<: *django
+    command: ["celery", "-A", "config", "worker", "--queues", "email,maintenance", "--pool", "prefork", "--concurrency", "2", "--loglevel", "INFO"]
+    tmpfs:
+      - /tmp
+    stop_grace_period: 70s
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/celery-worker.heartbeat -mmin -1 | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 384M
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis-broker:
+        condition: service_healthy
+    networks:
+      - data
+      - mail
+
+  celery-beat:
+    <<: *django
+    command: ["celery", "-A", "config", "beat", "--schedule", "/tmp/celerybeat-schedule", "--loglevel", "INFO"]
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 192M
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis-broker:
+        condition: service_healthy
+    networks:
       - data
 
   frontend:
@@ -89,15 +177,18 @@ services:
 
 volumes:
   postgres_data:
+  redis_broker_data:
   django_static:
   django_media:
-  django_logs:
 
 networks:
-  # PostgreSQL and Redis are reachable only by the backend and have no host ports.
+  # PostgreSQL, Redis and the broker: no host ports, no route outside the host.
   data:
     driver: bridge
     internal: true
-  # Backend retains outbound SMTP access and is reachable by the frontend only.
+  # Frontend to backend.
   edge:
+    driver: bridge
+  # Outbound SMTP for the Celery worker only.
+  mail:
     driver: bridge
