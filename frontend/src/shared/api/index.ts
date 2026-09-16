@@ -7,7 +7,7 @@ export type UserOut = Schemas["UserOut"];
 export type SessionOut = Schemas["SessionOut"];
 export type MessageOut = Schemas["MessageOut"];
 export type VerificationDeliveryOut = Schemas["VerificationDeliveryOut"];
-export type AnimeDetailOut = Schemas["AnimeDetailOut"];
+export type AnimeStatsOut = Schemas["AnimeStatsOut"];
 export type RatingOut = Schemas["RatingOut"];
 export type CommentOut = Schemas["CommentOut"];
 export type CommentPageOut = Schemas["CommentPageOut"];
@@ -40,7 +40,7 @@ export const profileApi = {
 };
 
 export const catalogApi = {
-  detail: (slug: string) => request<AnimeDetailOut>(`/anime/${slug}`),
+  stats: (slug: string) => request<AnimeStatsOut>(`/anime/${slug}`),
   registerView: (slug: string) => request<void>(`/anime/${slug}/view`, { method: "POST" }),
   rate: (slug: string, rating: number) =>
     request<RatingOut>(`/anime/${slug}/rating`, { method: "POST", json: { rating } }),

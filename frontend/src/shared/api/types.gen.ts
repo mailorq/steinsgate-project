@@ -181,8 +181,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Anime Detail */
-        get: operations["catalog_api_anime_detail"];
+        /** Anime Stats */
+        get: operations["catalog_api_anime_stats"];
         put?: never;
         post?: never;
         delete?: never;
@@ -314,10 +314,7 @@ export interface components {
             /** Avatar Url */
             avatar_url: string | null;
         };
-        /**
-         * VerificationDeliveryOut
-         * @description
-         */
+        /** VerificationDeliveryOut */
         VerificationDeliveryOut: {
             /** Detail */
             detail: string;
@@ -364,20 +361,17 @@ export interface components {
             /** Name */
             name: string;
         };
-        /** AnimeDetailOut */
-        AnimeDetailOut: {
+        /**
+         * AnimeStatsOut
+         * @description Только динамика тайтла.
+         *
+         *     Название, сезон, тип, жанры и описание не меняются без релиза, поэтому
+         *     живут в бандле фронтенда и не гоняются по сети на каждый просмотр.Slug
+         *     остаётся, чтобы клиент мог сшить этот ответ со статической записью.
+         */
+        AnimeStatsOut: {
             /** Slug */
             slug: string;
-            /** Name */
-            name: string;
-            /** Season */
-            season: string;
-            /** Type */
-            type: string;
-            /** Genres */
-            genres: string;
-            /** Description */
-            description: string;
             /** Avg Rating */
             avg_rating: number | null;
             /** Total Views */
@@ -884,7 +878,7 @@ export interface operations {
             };
         };
     };
-    catalog_api_anime_detail: {
+    catalog_api_anime_stats: {
         parameters: {
             query?: never;
             header?: never;
@@ -901,7 +895,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AnimeDetailOut"];
+                    "application/json": components["schemas"]["AnimeStatsOut"];
                 };
             };
             /** @description Not Found */

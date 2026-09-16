@@ -10,7 +10,7 @@ from config.throttling import auth_throttles, view_event_throttles
 
 from . import services
 from .models import AnimeDescription
-from .schemas import AnimeDetailOut, AnimeListOut, RatingIn, RatingOut
+from .schemas import AnimeListOut, AnimeStatsOut, RatingIn, RatingOut
 
 router = Router(tags=["catalog"])
 
@@ -25,9 +25,9 @@ def list_anime(request):
     return services.anime_list()
 
 
-@router.get("/anime/{slug}", response={200: AnimeDetailOut, 404: MessageOut})
-def anime_detail(request, slug: str):
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+@router.get("/anime/{slug}", response={200: AnimeStatsOut, 404: MessageOut})
+def anime_stats(request, slug: str):
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
 
     user_rating = None
     if request.user.is_authenticated:
@@ -36,11 +36,6 @@ def anime_detail(request, slug: str):
 
     return {
         "slug": anime.slug,
-        "name": anime.name,
-        "season": anime.appearing,
-        "type": anime.type,
-        "genres": anime.genres,
-        "description": anime.description,
         "avg_rating": services.average_rating(anime),
         "total_views": services.total_views(anime),
         "user_rating": user_rating,
@@ -56,7 +51,7 @@ def register_view(request, slug: str):
     if check_csrf(request) is not None:
         return 403, {"detail": "Проверка CSRF не пройдена"}
 
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
     services.register_view_event(
         anime=anime,
         user=request.user,
@@ -72,7 +67,7 @@ def register_view(request, slug: str):
     throttle=WRITE_THROTTLES,
 )
 def rate_anime(request, slug: str, payload: RatingIn):
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
 
     try:
         avg_rating = services.rate_anime(user=request.user, anime=anime, rating=payload.rating)

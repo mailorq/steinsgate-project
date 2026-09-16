@@ -1,10 +1,7 @@
 import { useState } from "react";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-
-import { catalogApi } from "@/shared/api";
-import type { AnimeDetailOut } from "@/shared/api";
-import { useSession } from "@/shared/session/SessionContext";
+import { useAnimeStats, useRateAnime } from "@/entities/anime";
+import { useSession } from "@/shared/session/sessionContext";
 
 const STARS = [1, 2, 3, 4, 5];
 
@@ -14,24 +11,11 @@ interface RatingStarsProps {
 
 export function RatingStars({ animeSlug }: RatingStarsProps) {
   const { user } = useSession();
-  const queryClient = useQueryClient();
   const [hovered, setHovered] = useState<number | null>(null);
 
-  const { data } = useQuery({
-    queryKey: ["anime", animeSlug],
-    queryFn: () => catalogApi.detail(animeSlug),
-  });
-
-  const rateMutation = useMutation({
-    mutationFn: (rating: number) => catalogApi.rate(animeSlug, rating),
-    onSuccess: (result) => {
-      queryClient.setQueryData<AnimeDetailOut>(["anime", animeSlug], (old) =>
-        old
-          ? { ...old, avg_rating: result.avg_rating, user_rating: result.user_rating }
-          : old,
-      );
-    },
-  });
+  // тот же ключ, что у страницы. запрос уходит один
+  const { data } = useAnimeStats(animeSlug);
+  const rateMutation = useRateAnime(animeSlug);
 
   const avgRating = data?.avg_rating ?? null;
   const userRating = data?.user_rating ?? null;

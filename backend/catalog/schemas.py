@@ -7,13 +7,8 @@ class AnimeListOut(Schema):
     name: str
 
 
-class AnimeDetailOut(Schema):
+class AnimeStatsOut(Schema):
     slug: str
-    name: str
-    season: str
-    type: str
-    genres: str
-    description: str
     avg_rating: float | None
     total_views: int
     user_rating: int | None

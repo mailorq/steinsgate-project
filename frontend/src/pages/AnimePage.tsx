@@ -1,31 +1,35 @@
 import { useEffect, useRef } from "react";
 import { Navigate, useParams } from "react-router-dom";
 
+import { useAnime } from "@/entities/anime";
 import { CommentsSection } from "@/features/comments/CommentsSection";
 import { PlayerSwitcher } from "@/features/player/PlayerSwitcher";
 import { RatingStars } from "@/features/rating/RatingStars";
 import { WatchProgressBar } from "@/features/watch/WatchProgressBar";
 import { useWatchProgress } from "@/features/watch/useWatchProgress";
 import { catalogApi } from "@/shared/api";
-import { findAnimeBySlug } from "@/shared/config/animes";
 import type { AnimeInfo } from "@/shared/config/animes";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { Faq } from "@/shared/ui/Faq";
 
 export function AnimePage() {
   const { slug } = useParams();
   const { user } = useSession();
-  const anime = findAnimeBySlug(slug);
-  const animeSlug = anime?.slug;
+  const anime = useAnime(slug);
+  const info = anime?.info;
+  const animeSlug = info?.slug;
   const trackedAnimeSlug = useRef<string | null>(null);
-  const hasEpisodePlayer = anime?.players.some((player) => player.type === "episodes") ?? false;
-  const { progress, resume } = useWatchProgress(anime?.slug ?? "", anime !== undefined && user !== null && !hasEpisodePlayer);
+  const hasEpisodePlayer = info?.players.some((player) => player.type === "episodes") ?? false;
+  const { progress, resume } = useWatchProgress(
+    animeSlug ?? "",
+    info !== undefined && user !== null && !hasEpisodePlayer,
+  );
 
   useEffect(() => {
-    if (anime) {
-      document.title = anime.name;
+    if (info) {
+      document.title = info.name;
     }
-  }, [anime]);
+  }, [info]);
 
   useEffect(() => {
     if (!animeSlug) {
@@ -40,17 +44,17 @@ export function AnimePage() {
     void catalogApi.registerView(animeSlug).catch(() => undefined);
   }, [animeSlug]);
 
-  if (!anime) {
+  if (!info) {
     return <Navigate to="/steins-gate" replace />;
   }
 
   return (
     <>
-      <AnimeDescription anime={anime} />
-      <PlayerSwitcher key={anime.slug} animeSlug={anime.slug} players={anime.players} />
+      <AnimeDescription anime={info} />
+      <PlayerSwitcher key={info.slug} animeSlug={info.slug} players={info.players} />
       {!hasEpisodePlayer && <WatchProgressBar progress={progress} onResume={resume} />}
       <Faq />
-      <CommentsSection animeSlug={anime.slug} />
+      <CommentsSection animeSlug={info.slug} />
     </>
   );
 }

@@ -229,16 +229,24 @@ class CatalogApiTest(TestCase):
         self.assertEqual(len(response.json()), 4)
         self.assertIn('steins-gate', [item['slug'] for item in response.json()])
 
-    def test_anime_detail_does_not_register_a_view(self):
+    def test_anime_stats_does_not_register_a_view(self):
         response = self.client.get('/api/anime/steins-gate')
         self.client.get('/api/anime/steins-gate')
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data['name'], 'Steins;Gate')
-        self.assertEqual(data['season'], '2011 весна')
+        self.assertEqual(data['slug'], 'steins-gate')
         self.assertIsNone(data['avg_rating'])
+        self.assertEqual(data['total_views'], 0)
+        self.assertIsNone(data['user_rating'])
         self.assertEqual(ViewHistory.objects.count(), 0)
+
+    def test_anime_stats_does_not_expose_static_metadata(self):
+        data = self.client.get('/api/anime/steins-gate').json()
+
+        self.assertEqual(
+            set(data), {'slug', 'avg_rating', 'total_views', 'user_rating'}
+        )
 
     def test_view_endpoint_registers_deduplicated_view(self):
         response = self.client.post('/api/anime/steins-gate/view', **csrf_headers(self.client))
