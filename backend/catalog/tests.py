@@ -165,6 +165,15 @@ class AggregateCacheTest(TestCase):
 
         self.assertEqual(services.average_rating(self.anime), 5.0)
 
+    def test_stale_read_does_not_overwrite_average_written_by_a_vote(self):
+        services.rate_anime(user=self.user, anime=self.anime, rating=3)
+
+        with patch('catalog.services.cache.get', return_value=None), \
+             patch('catalog.services._compute_average', return_value=5.0):
+            services.average_rating(self.anime)
+
+        self.assertEqual(services.average_rating(self.anime), 3.0)
+
     def test_total_views_is_cached(self):
         self.assertEqual(services.total_views(self.anime), 0)
         # TestCase itself wraps the test in a transaction; execute callbacks

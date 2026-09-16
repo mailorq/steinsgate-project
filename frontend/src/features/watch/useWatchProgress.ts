@@ -40,7 +40,7 @@ export function useWatchProgress(animeSlug: string, enabled: boolean) {
     enabled,
   });
 
-  const saveMutation = useMutation({
+  const { mutate: saveProgress } = useMutation({
     mutationFn: (payload: { current_time: number; duration: number }) =>
       watchApi.save(animeSlug, payload),
     onSuccess: (result) => {
@@ -67,7 +67,7 @@ export function useWatchProgress(animeSlug: string, enabled: boolean) {
         window.clearTimeout(saveTimeoutRef.current);
       }
       saveTimeoutRef.current = window.setTimeout(() => {
-        saveMutation.mutate({ current_time: currentTime, duration });
+        saveProgress({ current_time: currentTime, duration });
       }, SAVE_DEBOUNCE_MS);
     };
 
@@ -85,8 +85,7 @@ export function useWatchProgress(animeSlug: string, enabled: boolean) {
         window.clearTimeout(saveTimeoutRef.current);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [animeSlug, enabled]);
+  }, [animeSlug, enabled, saveProgress]);
 
   function resume() {
     if (!progress || progress.current_time < MIN_SAVE_SECONDS) {
