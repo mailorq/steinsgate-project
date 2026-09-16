@@ -48,7 +48,7 @@ def my_reactions_map(user, comments) -> dict[int, str]:
 
 @router.get("/anime/{slug}/comments", response=CommentPageOut)
 def list_comments(request, slug: str, page: int = 1):
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
 
     paginator = Paginator(services.comments_for_anime(anime), COMMENTS_PER_PAGE)
     page_obj = paginator.get_page(page)
@@ -76,7 +76,7 @@ def list_comments(request, slug: str, page: int = 1):
     throttle=WRITE_THROTTLES,
 )
 def create_comment(request, slug: str, payload: CommentIn):
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
 
     try:
         comment = services.create_comment(user=request.user, anime=anime, text=payload.text)

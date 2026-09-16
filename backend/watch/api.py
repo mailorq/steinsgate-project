@@ -12,7 +12,7 @@ router = Router(tags=["watch"])
 
 @router.get("/anime/{slug}/progress", response=ProgressOut, auth=django_auth)
 def get_progress(request, slug: str):
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
     progress = request.user.watch_progress.filter(anime=anime).first()
 
     if progress is None:
@@ -27,7 +27,7 @@ def get_progress(request, slug: str):
 
 @router.put("/anime/{slug}/progress", response=ProgressOut, auth=django_auth)
 def save_progress(request, slug: str, payload: ProgressIn):
-    anime = get_object_or_404(AnimeDescription, slug=slug)
+    anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
     progress = services.save_progress(
         user=request.user,
         anime=anime,
