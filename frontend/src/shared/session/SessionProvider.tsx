@@ -11,7 +11,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: SESSION_QUERY_KEY,
-    queryFn: authApi.session,
+    queryFn: ({ signal }) => authApi.session(signal),
     staleTime: 5 * 60 * 1000,
     retry: false,
   });

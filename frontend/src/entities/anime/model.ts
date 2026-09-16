@@ -12,26 +12,25 @@ export function animeStatsKey(slug: string) {
 export interface AnimeEntity {
   info: AnimeInfo;
   stats: AnimeStatsOut | null;
-  isStatsPending: boolean;
 }
 
-export function useAnimeStats(slug: string) {
+function useAnimeStats(slug: string) {
   return useQuery({
     queryKey: animeStatsKey(slug),
-    queryFn: () => catalogApi.stats(slug),
+    queryFn: ({ signal }) => catalogApi.stats(slug, signal),
     enabled: slug.length > 0,
   });
 }
 
 export function useAnime(slug: string | undefined): AnimeEntity | null {
   const info = findAnimeBySlug(slug);
-  const { data, isPending } = useAnimeStats(info?.slug ?? "");
+  const { data } = useAnimeStats(info?.slug ?? "");
 
   if (info === undefined) {
     return null;
   }
 
-  return { info, stats: data ?? null, isStatsPending: isPending };
+  return { info, stats: data ?? null };
 }
 
 export function useRateAnime(slug: string) {

@@ -30,7 +30,7 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
   const queryKey = ["comments", animeSlug, page];
   const { data } = useQuery({
     queryKey,
-    queryFn: () => commentsApi.list(animeSlug, page),
+    queryFn: ({ signal }) => commentsApi.list(animeSlug, page, signal),
     placeholderData: (previous) => previous,
   });
 

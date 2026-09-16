@@ -8,6 +8,7 @@ import { RatingStars } from "@/features/rating/RatingStars";
 import { WatchProgressBar } from "@/features/watch/WatchProgressBar";
 import { useWatchProgress } from "@/features/watch/useWatchProgress";
 import { catalogApi } from "@/shared/api";
+import type { AnimeStatsOut } from "@/shared/api";
 import type { AnimeInfo } from "@/shared/config/animes";
 import { useSession } from "@/shared/session/sessionContext";
 import { Faq } from "@/shared/ui/Faq";
@@ -50,7 +51,7 @@ export function AnimePage() {
 
   return (
     <>
-      <AnimeDescription anime={info} />
+      <AnimeDescription anime={info} stats={anime?.stats ?? null} />
       <PlayerSwitcher key={info.slug} animeSlug={info.slug} players={info.players} />
       {!hasEpisodePlayer && <WatchProgressBar progress={progress} onResume={resume} />}
       <Faq />
@@ -59,7 +60,7 @@ export function AnimePage() {
   );
 }
 
-function AnimeDescription({ anime }: { anime: AnimeInfo }) {
+function AnimeDescription({ anime, stats }: { anime: AnimeInfo; stats: AnimeStatsOut | null }) {
   return (
     <div className="mx-auto mt-2 mb-10 max-w-5xl md:mb-14">
       <div className="flex flex-col gap-6 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-5 backdrop-blur-sm md:flex-row md:gap-8 md:p-7">
@@ -89,7 +90,7 @@ function AnimeDescription({ anime }: { anime: AnimeInfo }) {
 
           <div className="my-5 h-px w-full bg-zinc-800" />
 
-          <RatingStars animeSlug={anime.slug} />
+          <RatingStars animeSlug={anime.slug} stats={stats} />
 
           <div className="my-5 h-px w-full bg-zinc-800" />
 

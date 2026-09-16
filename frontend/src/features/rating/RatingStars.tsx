@@ -1,25 +1,24 @@
 import { useState } from "react";
 
-import { useAnimeStats, useRateAnime } from "@/entities/anime";
+import { useRateAnime } from "@/entities/anime";
+import type { AnimeStatsOut } from "@/shared/api";
 import { useSession } from "@/shared/session/sessionContext";
 
 const STARS = [1, 2, 3, 4, 5];
 
 interface RatingStarsProps {
   animeSlug: string;
+  stats: AnimeStatsOut | null;
 }
 
-export function RatingStars({ animeSlug }: RatingStarsProps) {
+export function RatingStars({ animeSlug, stats }: RatingStarsProps) {
   const { user } = useSession();
   const [hovered, setHovered] = useState<number | null>(null);
-
-  // тот же ключ, что у страницы. запрос уходит один
-  const { data } = useAnimeStats(animeSlug);
   const rateMutation = useRateAnime(animeSlug);
 
-  const avgRating = data?.avg_rating ?? null;
-  const userRating = data?.user_rating ?? null;
-  const totalViews = data?.total_views;
+  const avgRating = stats?.avg_rating ?? null;
+  const userRating = stats?.user_rating ?? null;
+  const totalViews = stats?.total_views;
 
   return (
     <>
