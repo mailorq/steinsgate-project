@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { ANIMES, findAnimeBySlug } from "@/shared/config/animes";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { DivergenceMeter } from "@/shared/ui/DivergenceMeter";
 
 const DEFAULT_WORLDLINE = "0.000000";

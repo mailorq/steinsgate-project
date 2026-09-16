@@ -7,7 +7,7 @@ export type UserOut = Schemas["UserOut"];
 export type SessionOut = Schemas["SessionOut"];
 export type MessageOut = Schemas["MessageOut"];
 export type VerificationDeliveryOut = Schemas["VerificationDeliveryOut"];
-export type AnimeDetailOut = Schemas["AnimeDetailOut"];
+export type AnimeStatsOut = Schemas["AnimeStatsOut"];
 export type RatingOut = Schemas["RatingOut"];
 export type CommentOut = Schemas["CommentOut"];
 export type CommentPageOut = Schemas["CommentPageOut"];
@@ -17,7 +17,7 @@ export type ProgressOut = Schemas["ProgressOut"];
 export { ApiError } from "./client";
 
 export const authApi = {
-  session: () => request<SessionOut>("/auth/session"),
+  session: (signal?: AbortSignal) => request<SessionOut>("/auth/session", { signal }),
   register: (payload: { username: string; email: string; password: string }) =>
     request<VerificationDeliveryOut>("/auth/register", { method: "POST", json: payload }),
   resendVerification: () =>
@@ -40,15 +40,16 @@ export const profileApi = {
 };
 
 export const catalogApi = {
-  detail: (slug: string) => request<AnimeDetailOut>(`/anime/${slug}`),
+  stats: (slug: string, signal?: AbortSignal) =>
+    request<AnimeStatsOut>(`/anime/${slug}`, { signal }),
   registerView: (slug: string) => request<void>(`/anime/${slug}/view`, { method: "POST" }),
   rate: (slug: string, rating: number) =>
     request<RatingOut>(`/anime/${slug}/rating`, { method: "POST", json: { rating } }),
 };
 
 export const commentsApi = {
-  list: (slug: string, page: number) =>
-    request<CommentPageOut>(`/anime/${slug}/comments?page=${page}`),
+  list: (slug: string, page: number, signal?: AbortSignal) =>
+    request<CommentPageOut>(`/anime/${slug}/comments?page=${page}`, { signal }),
   create: (slug: string, text: string) =>
     request<CommentOut>(`/anime/${slug}/comments`, { method: "POST", json: { text } }),
   react: (commentId: number, isLike: boolean) =>
@@ -61,7 +62,8 @@ export const commentsApi = {
 };
 
 export const watchApi = {
-  get: (slug: string) => request<ProgressOut>(`/anime/${slug}/progress`),
+  get: (slug: string, signal?: AbortSignal) =>
+    request<ProgressOut>(`/anime/${slug}/progress`, { signal }),
   save: (slug: string, payload: { current_time: number; duration: number }) =>
     request<ProgressOut>(`/anime/${slug}/progress`, { method: "PUT", json: payload }),
 };

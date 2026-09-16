@@ -42,6 +42,7 @@ interface RequestOptions {
   method?: string;
   json?: unknown;
   form?: FormData;
+  signal?: AbortSignal;
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -66,6 +67,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     headers,
     body,
     credentials: "same-origin",
+    signal: options.signal,
   });
 
   if (response.status === 204) {

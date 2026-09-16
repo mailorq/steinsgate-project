@@ -36,7 +36,7 @@ export function useWatchProgress(animeSlug: string, enabled: boolean) {
 
   const { data: progress } = useQuery({
     queryKey: ["progress", animeSlug],
-    queryFn: () => watchApi.get(animeSlug),
+    queryFn: ({ signal }) => watchApi.get(animeSlug, signal),
     enabled,
   });
 

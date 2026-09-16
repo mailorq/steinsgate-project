@@ -6,7 +6,7 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 
 import { cropImageToFile } from "@/features/avatar/cropImage";
 import { ApiError, profileApi } from "@/shared/api";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { Avatar } from "@/shared/ui/Avatar";
 import { FormCard } from "@/shared/ui/FormCard";
 

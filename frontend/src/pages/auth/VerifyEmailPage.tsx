@@ -3,7 +3,7 @@ import type { ClipboardEvent, FormEvent, KeyboardEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, authApi } from "@/shared/api";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { FormCard } from "@/shared/ui/FormCard";
 
 const CODE_LENGTH = 6;

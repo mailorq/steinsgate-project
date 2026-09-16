@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { authApi } from "@/shared/api";
-import { useSession } from "@/shared/session/SessionContext";
+import { useSession } from "@/shared/session/sessionContext";
 import { FormCard } from "@/shared/ui/FormCard";
 
 export function LogoutPage() {

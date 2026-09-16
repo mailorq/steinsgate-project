@@ -14,6 +14,10 @@ class AnimeDescription(models.Model):
     def __str__(self):
         return self.name
 
+    @classmethod
+    def refs(cls):
+        return cls.objects.only("id", "slug")
+
 
 class AnimeRating(models.Model):
     user = models.ForeignKey(
@@ -50,6 +54,12 @@ class ViewHistory(models.Model):
 
     class Meta:
         ordering = ["-viewed_at"]
+        # порядок полей повторяет фильтры дедупликации, чтобы first() брал первую строку индекса вместо сортировки
+        indexes = [
+            models.Index(fields=["anime", "user", "-viewed_at"], name="catalog_view_user_idx"),
+            models.Index(fields=["anime", "ip_address", "-viewed_at"], name="catalog_view_ip_idx"),
+            models.Index(fields=["user", "-viewed_at"], name="catalog_view_history_idx"),
+        ]
 
     def __str__(self):
         return f"{self.anime.name} - {self.viewed_at}"
