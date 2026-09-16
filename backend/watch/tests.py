@@ -42,3 +42,42 @@ class WatchApiTest(TestCase):
 
         saved = self.client.get(self.URL).json()
         self.assertEqual(saved['current_time'], 600.0)
+
+    def test_non_finite_values_are_rejected(self):
+        self.client.login(username='okabe', password='elpsykongroo')
+
+        response = self.client.put(
+            self.URL,
+            '{"current_time": Infinity, "duration": Infinity}',
+            content_type='application/json',
+            **csrf_headers(self.client),
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn(b'Infinity', self.client.get(self.URL).content)
+
+    def test_position_is_clamped_to_duration(self):
+        self.client.login(username='okabe', password='elpsykongroo')
+
+        response = self.client.put(
+            self.URL,
+            {'current_time': 5000, 'duration': 1500},
+            content_type='application/json',
+            **csrf_headers(self.client),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['current_time'], 1500.0)
+        self.assertEqual(response.json()['percentage'], 100.0)
+
+    def test_absurd_duration_is_rejected(self):
+        self.client.login(username='okabe', password='elpsykongroo')
+
+        response = self.client.put(
+            self.URL,
+            {'current_time': 0, 'duration': 10 ** 12},
+            content_type='application/json',
+            **csrf_headers(self.client),
+        )
+
+        self.assertEqual(response.status_code, 422)
