@@ -97,3 +97,5 @@ docker compose -p steinsgate_loadtest -f compose.yaml -f compose.loadtest.yaml d
 ```bash
 docker compose -f compose.yaml -f compose.loadtest.yaml exec backend python manage.py seed_loadtest --flush
 ```
+
+Сид пересчитывает `likes_count` и `dislikes_count` своих комментариев и прибавляет созданные просмотры к `total_views`. `--flush` вычитает из `total_views` удаляемые просмотры. Засеянные просмотры, которые ротация уже удалила (старше суток), вычесть нечем, они остаются в счётчике.

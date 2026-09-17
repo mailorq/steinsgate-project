@@ -87,7 +87,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 
 ## Caching and logging
 
-Redis caches the average rating, view counters and the title list. A view is registered by a CSRF-protected `POST`. PostgreSQL decides under an advisory lock whether the view is new within 24 hours; Redis keeps a marker for the rest of that window. User-specific data is not cached.
+Redis caches the average rating and the title list. A view is registered by a CSRF-protected `POST`. PostgreSQL decides under an advisory lock whether the view is new within 24 hours; Redis keeps a marker for the rest of that window. User-specific data is not cached.
 
 Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handled by the Docker `local` logging driver. Local runs write `application.log`, `security.log` and `error.log` to `backend/logs/`, `access.log` only under `runserver`.
 
@@ -98,6 +98,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 | `send_verification_code` | `email` | registration and resend, after commit |
 | `reconcile_verification_delivery` | `email` | Beat, every minute |
 | `purge_expired_registrations` | `maintenance` | Beat, hourly, batches of 1000 until the backlog is empty |
+| `purge_view_history` | `maintenance` | Beat, hourly, deletes views older than the 24-hour window in batches of 5000, at most 100 batches per run |
 | `clear_expired_sessions` | `maintenance` | Beat, daily |
 
 - **Retries:** SMTP 4xx replies, disconnects, timeouts and connection errors are retried up to 5 times with exponential backoff (15 s base, 180 s cap, full jitter). 5xx replies and authentication errors set `delivery_failed_at` without retry. The retry window fits into the 15-minute code TTL, an expired code is not sent.
@@ -145,11 +146,21 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 ### Concurrency control and locking
 
-**Where:** `select_for_update` in `accounts/services.py` (`verify_email`, `resend_verification`, `purge_expired_registrations`); PostgreSQL advisory lock in `catalog/services.py::_acquire_view_dedup_lock`.
+**Where:** `select_for_update` in `accounts/services.py` (`verify_email`, `resend_verification`, `purge_expired_registrations`), `comments/services.py::toggle_reaction` and `comments/signals.py`; PostgreSQL advisory lock in `catalog/services.py::_acquire_view_dedup_lock`.
 
-**Problem:** attempt counters and resend limits are read, checked and written back. Without a lock, parallel requests read the same value and the limit does not trigger. Parallel view events for the same viewer create duplicate rows.
+**Problem:** attempt counters and resend limits are read, checked and written back. Without a lock, parallel requests read the same value and the limit does not trigger. Parallel reactions to one comment decide between add, switch and remove from a stale reaction. Parallel view events for the same viewer create duplicate rows.
 
-**Solution:** pessimistic row locks for verification and resend, an advisory lock keyed by title and viewer for view deduplication. The transactions are short and contended by a single user, so blocking is cheaper than optimistic retries.
+**Solution:** pessimistic row locks for verification, resend and the reacted comment, an advisory lock keyed by title and viewer for view deduplication. Deleting a user locks that user's row before its counters run, otherwise a request of the same user could add a reaction between the recount and the cascade. The transactions are short and contended by a single user, so blocking is cheaper than optimistic retries.
+
+### Denormalized counters and view history rotation
+
+**Where:** `comments/models.py::Comment` (`likes_count`, `dislikes_count`), `catalog/models.py::AnimeDescription.total_views`, `comments/signals.py`, `catalog/services.py::purge_view_history`, `catalog/tasks.py`.
+
+**Problem:** a comment page counted reactions for every comment of the title before `LIMIT`. With 100 000 comments and 400 000 reactions the first page took 113 ms: a parallel scan of all reactions and a sort on disk. The view count was `count(*)` over `ViewHistory`, so the history could not be trimmed and grew with every view.
+
+**Solution:** the counters are columns updated with `F()` in the transaction that writes the reaction or the view. The page query became an index scan on `comments_page_idx` (`anime, -created_at, -id`) with `LIMIT`, 0.2 ms on the same data. Deleting a user removes reactions by cascade past the service, so a `pre_delete` handler locks the affected comments and decrements their counters in the same transaction. `ViewHistory` only serves the 24-hour deduplication window; Beat deletes older rows by primary key in batches. The migrations fill the counters from existing rows.
+
+**Trade-off:** after rotation `total_views` cannot be recomputed from history. Reactions inserted past the service, for example by `bulk_create`, need `comments/services.py::recount_reactions`. New views of one title wait for each other on the title row between the counter update and commit.
 
 ### Cache-aside with fail-open fallback
 
@@ -157,7 +168,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 **Problem:** aggregate queries run on every page view, and a Redis outage must not take the site down. A read that computed the average before a vote commits can overwrite the fresh value.
 
-**Solution:** a vote writes the recomputed average; reads fill a missing key with `add` and never overwrite. Counters and the title list expire by TTL. Every cache call goes through `_safe_cache` and falls back to PostgreSQL. Throttles use `FailOpenMixin` for regular endpoints and `FailClosedMixin` for authentication, each limit window with its own cache scope.
+**Solution:** a vote writes the recomputed average; reads fill a missing key with `add` and never overwrite. The title list expires by TTL. Every cache call goes through `_safe_cache` and falls back to PostgreSQL. Throttles use `FailOpenMixin` for regular endpoints and `FailClosedMixin` for authentication, each limit window with its own cache scope.
 
 ### Client-side facade
 
@@ -174,7 +185,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 ├── backend/
 │   ├── config/          # settings, urls, api root, Celery app, throttling
 │   ├── accounts/        # auth, email verification, Celery tasks, profiles, IP lockout, management commands
-│   ├── catalog/         # titles, ratings, view history, aggregate cache
+│   ├── catalog/         # titles, ratings, view counter and history rotation, aggregate cache
 │   ├── comments/        # comments, reactions, spam filter
 │   ├── watch/           # watch progress
 │   ├── loadtest/        # Locust scenario and runner script
@@ -275,7 +286,7 @@ Vite serves the SPA with HMR at `http://localhost:5173`, runserver reloads Djang
 
 Backend: `cd backend`, create a venv, `pip install -r requirements.txt`, `python manage.py migrate`, `python manage.py runserver`. Frontend: `cd frontend`, `npm install`, `npm run dev`; Vite proxies `/api` and `/media` to `127.0.0.1:8000`.
 
-Without `CELERY_BROKER_URL` tasks run inline, so the verification letter is sent during the request. Periodic cleanup is available as `python manage.py purge_expired_registrations` (`--dry-run` reports one batch) and `python manage.py clearsessions`.
+Without `CELERY_BROKER_URL` tasks run inline, so the verification letter is sent during the request. Periodic cleanup is available as `python manage.py purge_expired_registrations` (`--dry-run` reports one batch) and `python manage.py clearsessions`. View history is trimmed only by Beat; by hand: `python manage.py shell -c "from catalog.tasks import purge_view_history; purge_view_history()"`.
 
 ## Testing
 
@@ -307,8 +318,6 @@ CI runs on pushes to `main` and `dev` and on pull requests: backend tests, deplo
 ## Backlog
 
 - Content Security Policy for Django admin pages.
-- Aggregated view counters: `total_views` counts `ViewHistory` rows, so view history has no retention.
-- Comment pages aggregate reactions for every comment of a title before `LIMIT`; select the page ids first once a title accumulates thousands of comments.
 
 ## Author
 
