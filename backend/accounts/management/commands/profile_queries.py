@@ -80,7 +80,6 @@ class Command(BaseCommand):
 
         for a in (few, full):
             cache.delete(f"anime:{a.id}:avg_rating")
-            cache.delete(f"anime:{a.id}:views")
 
     def _make_anime(self, slug: str, *, comments: int, author: User) -> AnimeDescription:
         anime = AnimeDescription.objects.create(

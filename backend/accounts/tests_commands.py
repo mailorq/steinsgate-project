@@ -7,10 +7,12 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db.models import Count, Q
 from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import EmailDeliveryQuota, EmailVerificationCode, email_delivery_fingerprint
+from catalog import services as catalog_services
 from catalog.models import AnimeDescription, ViewHistory
 from comments.models import Comment
 
@@ -25,17 +27,30 @@ class SeedLoadtestCommandTest(TestCase):
         self.assertEqual(first, 5)
         self.assertEqual(second, 5)
 
+    def test_seed_keeps_counters_consistent_with_rows(self):
+        call_command("seed_loadtest", "--force", "--users", "6", "--comments", "4", stdout=StringIO())
+
+        comments = Comment.objects.annotate(
+            likes=Count("comment_likes", filter=Q(comment_likes__is_like=True)),
+            dislikes=Count("comment_likes", filter=Q(comment_likes__is_like=False)),
+        )
+        for comment in comments:
+            self.assertEqual((comment.likes_count, comment.dislikes_count), (comment.likes, comment.dislikes))
+        for anime in AnimeDescription.objects.annotate(rows=Count("views")):
+            self.assertEqual(anime.total_views, anime.rows)
+
     def test_flush_removes_users_and_generated_views(self):
         call_command("seed_loadtest", "--force", "--users", "4", "--comments", "2", stdout=StringIO())
         user = User.objects.filter(username__startswith="loadtest_").first()
         anime = AnimeDescription.objects.first()
-        ViewHistory.objects.create(anime=anime, user=user, ip_address="10.9.9.9")
+        catalog_services.register_view_event(anime=anime, user=user, ip_address="10.9.9.9")
 
         call_command("seed_loadtest", "--force", "--flush", stdout=StringIO())
 
         self.assertEqual(User.objects.filter(username__startswith="loadtest_").count(), 0)
         self.assertEqual(Comment.objects.count(), 0)
         self.assertFalse(ViewHistory.objects.exists())
+        self.assertFalse(AnimeDescription.objects.exclude(total_views=0).exists())
 
     def test_reactions_only_on_loadtest_comments(self):
         anime = AnimeDescription.objects.first()

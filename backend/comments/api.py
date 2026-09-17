@@ -30,8 +30,8 @@ def serialize_comment(comment, my_reaction: str | None, can_delete: bool) -> dic
         },
         "text": comment.text,
         "created_at": comment.created_at,
-        "likes": comment.likes,
-        "dislikes": comment.dislikes,
+        "likes": comment.likes_count,
+        "dislikes": comment.dislikes_count,
         "my_reaction": my_reaction,
         "can_delete": can_delete,
     }
@@ -83,8 +83,6 @@ def create_comment(request, slug: str, payload: CommentIn):
     except services.CommentRejected as error:
         return 400, {"detail": str(error)}
 
-    comment.likes = 0
-    comment.dislikes = 0
     return 201, serialize_comment(comment, None, True)
 
 
@@ -105,12 +103,14 @@ def delete_comment(request, comment_id: int):
 
 @router.post(
     "/comments/{comment_id}/reaction",
-    response=ReactionOut,
+    response={200: ReactionOut, 404: MessageOut},
     auth=django_auth,
     throttle=WRITE_THROTTLES,
 )
 def toggle_reaction(request, comment_id: int, payload: ReactionIn):
-    comment = get_object_or_404(Comment, id=comment_id)
-    return services.toggle_reaction(
-        user=request.user, comment=comment, is_like=payload.is_like
+    result = services.toggle_reaction(
+        user=request.user, comment_id=comment_id, is_like=payload.is_like
     )
+    if result is None:
+        return 404, {"detail": "Комментарий не найден"}
+    return 200, result

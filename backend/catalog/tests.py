@@ -1,15 +1,17 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import transaction
-from django.test import Client, TestCase, TransactionTestCase
+from django.forms.models import model_to_dict
+from django.test import Client, RequestFactory, TestCase, TransactionTestCase
 from django.utils import timezone
 
 from accounts.tests import csrf_headers
 
-from . import services
+from . import services, tasks
 from .models import AnimeDescription, ViewHistory
 
 User = get_user_model()
@@ -59,6 +61,8 @@ class CatalogServiceTest(TestCase):
         services.register_view_event(anime=self.anime, user=self.user, ip_address='1.1.1.1')
 
         self.assertEqual(ViewHistory.objects.count(), 1)
+        self.anime.refresh_from_db()
+        self.assertEqual(self.anime.total_views, 1)
 
     def test_view_event_deduplicated_for_anonymous_by_ip(self):
         services.register_view_event(anime=self.anime, user=None, ip_address='2.2.2.2')
@@ -174,20 +178,6 @@ class AggregateCacheTest(TestCase):
 
         self.assertEqual(services.average_rating(self.anime), 3.0)
 
-    def test_total_views_is_cached(self):
-        self.assertEqual(services.total_views(self.anime), 0)
-        # TestCase itself wraps the test in a transaction; execute callbacks
-        # explicitly to mirror the committed production request.
-        with self.captureOnCommitCallbacks(execute=True):
-            services.register_view_event(
-                anime=self.anime, user=self.user, ip_address='1.1.1.1'
-            )
-
-        self.assertEqual(services.total_views(self.anime), 1)
-
-        with self.assertNumQueries(0):
-            services.total_views(self.anime)
-
     def test_anime_list_endpoint_is_cached(self):
         first = self.client.get('/api/anime')
         self.assertEqual(first.status_code, 200)
@@ -224,6 +214,82 @@ class ViewDedupCommitTest(TransactionTestCase):
             self.assertIsNone(cache.get(dedup_key))
 
         self.assertIsNotNone(cache.get(dedup_key))
+
+
+class ViewHistoryRotationTest(TestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username='okabe', password='elpsykongroo')
+        self.anime = AnimeDescription.objects.get(slug='steins-gate')
+
+    def add_view(self, *, age, ip_address='1.1.1.1', user=None):
+        view = ViewHistory.objects.create(anime=self.anime, user=user, ip_address=ip_address)
+        view.viewed_at = timezone.now() - age
+        view.save(update_fields=['viewed_at'])
+        return view
+
+    def test_purge_removes_only_rows_outside_dedup_window(self):
+        expired = self.add_view(age=services.VIEW_DEDUP_WINDOW + timedelta(minutes=1))
+        recent = self.add_view(age=services.VIEW_DEDUP_WINDOW - timedelta(minutes=1), ip_address='2.2.2.2')
+
+        deleted = services.purge_view_history(batch_size=10)
+
+        self.assertEqual(deleted, 1)
+        self.assertFalse(ViewHistory.objects.filter(pk=expired.pk).exists())
+        self.assertTrue(ViewHistory.objects.filter(pk=recent.pk).exists())
+
+    def test_purge_does_not_change_total_views(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            view = services.register_view_event(anime=self.anime, user=self.user, ip_address='1.1.1.1')
+        view.viewed_at = timezone.now() - services.VIEW_DEDUP_WINDOW - timedelta(minutes=1)
+        view.save(update_fields=['viewed_at'])
+
+        services.purge_view_history(batch_size=10)
+
+        self.anime.refresh_from_db()
+        self.assertEqual(self.anime.total_views, 1)
+        self.assertFalse(ViewHistory.objects.exists())
+
+    def test_task_drains_all_batches(self):
+        for i in range(5):
+            self.add_view(age=services.VIEW_DEDUP_WINDOW + timedelta(hours=1), ip_address=f'10.0.0.{i}')
+
+        with patch('catalog.tasks.PURGE_BATCH_SIZE', 2):
+            tasks.purge_view_history.delay()
+
+        self.assertFalse(ViewHistory.objects.exists())
+
+    def test_view_within_window_stays_deduplicated_after_purge(self):
+        self.add_view(age=services.VIEW_DEDUP_WINDOW + timedelta(hours=1), user=self.user)
+        self.add_view(age=timedelta(hours=1), user=self.user)
+        cache.clear()
+
+        services.purge_view_history(batch_size=10)
+        result = services.register_view_event(anime=self.anime, user=self.user, ip_address='1.1.1.1')
+
+        self.assertIsNone(result)
+        self.assertEqual(ViewHistory.objects.count(), 1)
+
+
+class AnimeAdminTest(TestCase):
+
+    def test_saving_title_keeps_views_registered_meanwhile(self):
+        anime = AnimeDescription.objects.get(slug='steins-gate')
+        stale = AnimeDescription.objects.get(pk=anime.pk)
+        services.register_view_event(anime=anime, user=None, ip_address='1.1.1.1')
+
+        request = RequestFactory().post('/admin/')
+        request.user = User.objects.create_superuser(username='admin', password='admin_pass_123')
+        model_admin = admin.site.get_model_admin(AnimeDescription)
+        form_class = model_admin.get_form(request, stale)
+        data = {name: value for name, value in model_to_dict(stale).items() if name in form_class.base_fields}
+        form = form_class(data={**data, 'poster': '', 'description': 'Updated'}, instance=stale)
+        self.assertTrue(form.is_valid(), form.errors)
+        model_admin.save_model(request, form.save(commit=False), form, change=True)
+
+        anime.refresh_from_db()
+        self.assertEqual((anime.description, anime.total_views), ('Updated', 1))
 
 
 class CatalogApiTest(TestCase):
@@ -263,6 +329,7 @@ class CatalogApiTest(TestCase):
 
         self.assertEqual(response.status_code, 204)
         self.assertEqual(ViewHistory.objects.count(), 1)
+        self.assertEqual(self.client.get('/api/anime/steins-gate').json()['total_views'], 1)
 
     def test_view_endpoint_associates_authenticated_user(self):
         user = User.objects.create_user(username='okabe', password='elpsykongroo')

@@ -13,24 +13,17 @@ class Comment(models.Model):
     )
     text = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
+    likes_count = models.PositiveIntegerField(default=0, db_default=0)
+    dislikes_count = models.PositiveIntegerField(default=0, db_default=0)
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["anime", "-created_at", "-id"], name="comments_page_idx"),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.anime.name}"
-
-    @property
-    def likes_count(self):
-        return self.comment_likes.filter(is_like=True).count()
-
-    @property
-    def dislikes_count(self):
-        return self.comment_likes.filter(is_like=False).count()
-
-    @property
-    def rating(self):
-        return self.likes_count - self.dislikes_count
 
 
 class CommentLike(models.Model):

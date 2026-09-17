@@ -396,6 +396,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "accounts.tasks.purge_expired_registrations",
         "schedule": timedelta(hours=1),
     },
+    "purge-view-history": {
+        "task": "catalog.tasks.purge_view_history",
+        "schedule": timedelta(hours=1),
+    },
     "clear-expired-sessions": {
         "task": "accounts.tasks.clear_expired_sessions",
         "schedule": timedelta(days=1),
