@@ -6,8 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 from ninja.conf import settings as ninja_settings
 
 from . import celery as celery_app
@@ -41,6 +42,65 @@ class ClientIpTest(TestCase):
         request = self._request("1.2.3.4, 203.0.113.7, 10.0.0.9")
         with patch.object(ninja_settings, "NUM_PROXIES", 2):
             self.assertEqual(get_client_ip(request), "203.0.113.7")
+
+
+class StaffOnlyAdminTest(TestCase):
+
+    PAGES = ('/admin/', '/admin/login/', '/admin/catalog/animedescription/', '/admin/missing/')
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='kurisu', password='makise_kurisu_1', is_staff=True, is_superuser=True
+        )
+        User.objects.create_user(username='daru', password='super_haker_1')
+
+    def site_login(self, username, password):
+        self.client.get('/api/auth/csrf')
+        return self.client.post(
+            '/api/auth/login',
+            {'username': username, 'password': password},
+            content_type='application/json',
+            HTTP_X_CSRFTOKEN=self.client.cookies['csrftoken'].value,
+        )
+
+    def assert_hidden(self):
+        for page in self.PAGES:
+            with self.subTest(page=page):
+                response = self.client.get(page)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response['Location'], '/steins-gate')
+
+    def test_anonymous_sees_nothing(self):
+        self.assert_hidden()
+
+    @override_settings(DEBUG=True)
+    def test_debug_mode_does_not_change_the_redirect(self):
+        response = self.client.get('/admin/')
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], '/steins-gate')
+
+    def test_admin_login_form_does_not_authenticate(self):
+        self.client.get('/api/auth/csrf')
+        response = self.client.post(
+            '/admin/login/',
+            {'username': 'kurisu', 'password': 'makise_kurisu_1',
+             'csrfmiddlewaretoken': self.client.cookies['csrftoken'].value},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], '/steins-gate')
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_regular_user_sees_nothing(self):
+        self.assertEqual(self.site_login('daru', 'super_haker_1').status_code, 200)
+        self.assert_hidden()
+
+    def test_staff_enters_through_site_login(self):
+        self.assertEqual(self.site_login('kurisu', 'makise_kurisu_1').status_code, 200)
+
+        self.assertEqual(self.client.get('/admin/').status_code, 200)
+        self.assertEqual(self.client.get('/admin/catalog/animedescription/').status_code, 200)
 
 
 class WorkerHeartbeatTest(TestCase):

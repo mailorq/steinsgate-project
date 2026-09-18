@@ -63,6 +63,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 - One address receives at most 6 verification letters per hour across registrations and resends. The counter is keyed by an HMAC of the address.
 - Rotating `SECRET_KEY` invalidates pending codes and sessions.
 - `auth_user.email` has a partial case-insensitive unique index.
+- The Django admin redirects anyone it does not admit to `/steins-gate`, its own login form included, the same response an unmatched frontend route gets from the SPA router. Staff sign in on the site through `/api/auth/login`, which has the IP lockout and throttles, and the same session opens `/admin/` (`config/middleware.py`).
 - Registration names a taken username or email explicitly. Usernames are public in comments, and hiding a taken email needs a letter to its owner instead of an error, which the site does not send.
 
 ### Abuse control
@@ -260,7 +261,7 @@ Admin access at `/admin/` is granted to an existing verified account, run from t
 docker compose -p steinsgate_mailor exec backend python manage.py shell -c "from django.contrib.auth.models import User; print(User.objects.filter(username='okabe', is_active=True).update(is_staff=True, is_superuser=True))"
 ```
 
-`1` means the account got access, `0` means there is no active account with that name.
+`1` means the account got access, `0` means there is no active account with that name. The account signs in on the site and then opens `/admin/`, everyone else lands on `/steins-gate`.
 
 ### Production proxy
 
