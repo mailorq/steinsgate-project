@@ -1,6 +1,8 @@
 import io
 import shutil
 import tempfile
+import threading
+import time
 from datetime import timedelta
 from smtplib import SMTPServerDisconnected
 from unittest.mock import patch
@@ -530,6 +532,29 @@ class FailingCache:
         raise RuntimeError('cache unavailable')
 
 
+class SlowCache(LocMemCache):
+    """кеш проекта живет в redis: вызов уходит по сети и отпускает GIL"""
+
+    def _over_network(self):
+        time.sleep(0.002)
+
+    def get(self, *args, **kwargs):
+        self._over_network()
+        return super().get(*args, **kwargs)
+
+    def set(self, *args, **kwargs):
+        self._over_network()
+        return super().set(*args, **kwargs)
+
+    def add(self, *args, **kwargs):
+        self._over_network()
+        return super().add(*args, **kwargs)
+
+    def incr(self, *args, **kwargs):
+        self._over_network()
+        return super().incr(*args, **kwargs)
+
+
 class SecurityThrottleTest(TransactionTestCase):
     def test_security_throttle_keeps_retry_after_for_a_normal_limit(self):
         request = RequestFactory().post('/api/auth/register')
@@ -541,6 +566,31 @@ class SecurityThrottleTest(TransactionTestCase):
         self.assertTrue(throttle.allow_request(request))
         self.assertFalse(throttle.allow_request(request))
         self.assertGreater(throttle.wait(), 0)
+
+    def test_parallel_clients_do_not_share_throttle_state(self):
+        # gunicorn обслуживает ручку несколькими потоками через один объект троттла
+        throttle = SecurityAnonBurstThrottle('10/m')
+        throttle.cache = SlowCache(f'throttle-threads-{id(self)}', {})
+        factory = RequestFactory()
+        verdicts = []
+        guard = threading.Lock()
+
+        def hammer(ip):
+            for _ in range(10):
+                allowed = throttle.allow_request(factory.post('/api/auth/register', REMOTE_ADDR=ip))
+                with guard:
+                    verdicts.append(allowed)
+
+        threads = [threading.Thread(target=hammer, args=(f'10.0.0.{i}',)) for i in range(1, 5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(verdicts, [True] * 40)
+        self.assertFalse(
+            throttle.allow_request(factory.post('/api/auth/register', REMOTE_ADDR='10.0.0.1'))
+        )
 
     def test_security_throttle_fails_closed(self):
         request = RequestFactory().post('/api/auth/register')

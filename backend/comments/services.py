@@ -1,8 +1,12 @@
+import html
 import logging
 import re
 
 import bleach
-from django.db.models import Count, Q
+from django.contrib.auth.models import User
+from django.db import transaction
+from django.db.models import Count, F, IntegerField, OuterRef, Subquery, Value
+from django.db.models.functions import Coalesce
 
 from . import moderation
 from .models import Comment, CommentLike
@@ -20,7 +24,8 @@ class CommentRejected(Exception):
 
 
 def create_comment(*, user, anime, text: str) -> Comment:
-    cleaned = bleach.clean(text.strip(), tags=[], strip=True)
+    # bleach не только вырезает теги, но и экранирует & < >, а текст хранится и отдается как есть, поэтому символы возвращаются на место до проверок
+    cleaned = html.unescape(bleach.clean(text.strip(), tags=[], strip=True))
     # Спойлер-маркеры не участвуют в проверках содержимого
     plain = cleaned.replace("||", "")
 
@@ -56,38 +61,63 @@ def delete_comment(*, user, comment: Comment) -> None:
 
 
 def comments_for_anime(anime):
-    # annotate с агрегатами отбрасывает Meta.ordering, сортировка нужна явная
     return (
         anime.comments
         .select_related("user", "user__profile")
-        .annotate(
-            likes=Count("comment_likes", filter=Q(comment_likes__is_like=True)),
-            dislikes=Count("comment_likes", filter=Q(comment_likes__is_like=False)),
-        )
         .order_by("-created_at", "-id")
     )
 
 
-def toggle_reaction(*, user, comment: Comment, is_like: bool) -> dict:
-    like, created = CommentLike.objects.get_or_create(
-        user=user,
-        comment=comment,
-        defaults={"is_like": is_like},
+def toggle_reaction(*, user, comment_id: int, is_like: bool) -> dict | None:
+    counter, opposite = (
+        ("likes_count", "dislikes_count") if is_like else ("dislikes_count", "likes_count")
     )
+    with transaction.atomic():
+        # порядок блокировок общий с удалением пользователя: сначала его строка, потом комментарий
+        # в обратном порядке пути сходятся в дедлок, потому что вставка реакции ждет строку пользователя по внешнему ключу
+        if not User.objects.select_for_update().filter(pk=user.pk).exists():
+            return None
 
-    if not created:
-        if like.is_like == is_like:
-            like.delete()
+        # блокировка комментария сериализует реакции на него: решение по текущей реакции и изменение счетчиков не расходятся при параллельных запросах
+        comment = Comment.objects.select_for_update().filter(pk=comment_id).first()
+        if comment is None:
+            return None
+
+        reaction = CommentLike.objects.filter(user=user, comment=comment).first()
+        if reaction is None:
+            CommentLike.objects.create(user=user, comment=comment, is_like=is_like)
+            deltas = {counter: F(counter) + 1}
+        elif reaction.is_like == is_like:
+            reaction.delete()
+            deltas = {counter: F(counter) - 1}
         else:
-            like.is_like = is_like
-            like.save(update_fields=["is_like"])
+            reaction.is_like = is_like
+            reaction.save(update_fields=["is_like"])
+            deltas = {counter: F(counter) + 1, opposite: F(opposite) - 1}
 
-    counts = comment.comment_likes.aggregate(
-        likes=Count("id", filter=Q(is_like=True)),
-        dislikes=Count("id", filter=Q(is_like=False)),
-    )
+        Comment.objects.filter(pk=comment.pk).update(**deltas)
+        comment.refresh_from_db(fields=["likes_count", "dislikes_count"])
+
     return {
-        "likes": counts["likes"],
-        "dislikes": counts["dislikes"],
-        "rating": counts["likes"] - counts["dislikes"],
+        "likes": comment.likes_count,
+        "dislikes": comment.dislikes_count,
+        "rating": comment.likes_count - comment.dislikes_count,
     }
+
+
+def _reaction_total(is_like: bool):
+    per_comment = (
+        CommentLike.objects.filter(comment=OuterRef("pk"), is_like=is_like)
+        .order_by()
+        .values("comment")
+        .annotate(total=Count("pk"))
+        .values("total")
+    )
+    return Coalesce(Subquery(per_comment), Value(0), output_field=IntegerField())
+
+
+def recount_reactions(comments) -> int:
+    """пересчитывает счетчики по реакциям для записей, созданных в обход сервиса"""
+    return comments.update(
+        likes_count=_reaction_total(True), dislikes_count=_reaction_total(False)
+    )

@@ -10,13 +10,14 @@ class AnimeDescription(models.Model):
     genres = models.CharField(max_length=500)
     description = models.TextField()
     poster = models.ImageField(upload_to="posters/", blank=True, default="")
+    total_views = models.PositiveBigIntegerField(default=0, db_default=0)
 
     def __str__(self):
         return self.name
 
     @classmethod
     def refs(cls):
-        return cls.objects.only("id", "slug")
+        return cls.objects.only("id", "slug", "total_views")
 
 
 class AnimeRating(models.Model):
@@ -58,7 +59,7 @@ class ViewHistory(models.Model):
         indexes = [
             models.Index(fields=["anime", "user", "-viewed_at"], name="catalog_view_user_idx"),
             models.Index(fields=["anime", "ip_address", "-viewed_at"], name="catalog_view_ip_idx"),
-            models.Index(fields=["user", "-viewed_at"], name="catalog_view_history_idx"),
+            models.Index(fields=["viewed_at"], name="catalog_view_rotation_idx"),
         ]
 
     def __str__(self):

@@ -1,7 +1,13 @@
+from contextlib import ExitStack
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
+from django.core.cache.backends.locmem import LocMemCache
 from django.test import TestCase
 
 from accounts.tests import csrf_headers
+
+from .api import PROGRESS_THROTTLES
 
 User = get_user_model()
 
@@ -42,6 +48,27 @@ class WatchApiTest(TestCase):
 
         saved = self.client.get(self.URL).json()
         self.assertEqual(saved['current_time'], 600.0)
+
+    def test_progress_writes_are_throttled(self):
+        self.client.login(username='okabe', password='elpsykongroo')
+        headers = csrf_headers(self.client)
+        payload = {'current_time': 600, 'duration': 1500}
+
+        with ExitStack() as limits:
+            for throttle in PROGRESS_THROTTLES:
+                limits.enter_context(patch.object(throttle, 'num_requests', 1))
+                limits.enter_context(
+                    patch.object(throttle, 'cache', LocMemCache(f'progress-{id(self)}', {}))
+                )
+            first = self.client.put(
+                self.URL, payload, content_type='application/json', **headers
+            )
+            second = self.client.put(
+                self.URL, payload, content_type='application/json', **headers
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
 
     def test_non_finite_values_are_rejected(self):
         self.client.login(username='okabe', password='elpsykongroo')

@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from django.core.cache import cache
 from django.db import connection, transaction
-from django.db.models import Avg
+from django.db.models import Avg, F
 from django.utils import timezone
 
 from .models import AnimeDescription, AnimeRating, ViewHistory
@@ -16,23 +16,20 @@ ANIME_LIST_TTL = 300
 
 VIEW_DEDUP_WINDOW = timedelta(hours=24)
 
-# Средний рейтинг инвалидируется точечно при новой оценке; счётчик просмотров
-# живёт по TTL — отставание на минуту для витрины безразлично
-AVG_RATING_TTL = 3600
-VIEWS_COUNT_TTL = 60
+# среднее пересчитывается читателем, голос только сбрасывает ключ: TTL ограничивает отставание, если чтение легло в кеш уже после чужого голоса
+AVG_RATING_TTL = 300
 
 
 def _avg_rating_key(anime) -> str:
     return f"anime:{anime.id}:avg_rating"
 
 
-def _views_key(anime) -> str:
-    return f"anime:{anime.id}:views"
+def _viewer_identity(viewer, ip_address: str | None) -> str:
+    return f"user:{viewer.pk}" if viewer is not None else f"ip:{ip_address or 'unknown'}"
 
 
 def _view_dedup_key(anime, viewer, ip_address: str | None) -> str:
-    identity = f"user:{viewer.pk}" if viewer is not None else f"ip:{ip_address or 'unknown'}"
-    fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+    fingerprint = hashlib.sha256(_viewer_identity(viewer, ip_address).encode()).hexdigest()
     return f"view-dedup:{anime.pk}:{fingerprint}"
 
 
@@ -41,8 +38,7 @@ def _acquire_view_dedup_lock(*, anime, viewer, ip_address: str | None) -> None:
     if connection.vendor != "postgresql":
         return
 
-    identity = f"user:{viewer.pk}" if viewer is not None else f"ip:{ip_address or 'unknown'}"
-    lock_material = f"{anime.pk}:{identity}".encode()
+    lock_material = f"{anime.pk}:{_viewer_identity(viewer, ip_address)}".encode()
     lock_key = int.from_bytes(
         hashlib.blake2b(lock_material, digest_size=8).digest(),
         byteorder="big",
@@ -89,6 +85,7 @@ def register_view_event(*, anime, user, ip_address):
             return None
 
         view = ViewHistory.objects.create(anime=anime, user=viewer, ip_address=ip_address)
+        AnimeDescription.objects.filter(pk=anime.pk).update(total_views=F("total_views") + 1)
         # Cache changes happen only after the database write is durable. This
         # also handles callers that wrap the service in an outer transaction.
         transaction.on_commit(
@@ -96,7 +93,6 @@ def register_view_event(*, anime, user, ip_address):
                 key=dedup_key, viewed_at=view.viewed_at, now=timezone.now()
             )
         )
-        transaction.on_commit(lambda: _safe_cache(cache.delete, _views_key(anime)))
         return view
 
 
@@ -107,9 +103,9 @@ def rate_anime(*, user, anime, rating: int) -> float | None:
     AnimeRating.objects.update_or_create(
         user=user, anime=anime, defaults={"rating": rating}
     )
-    value = _compute_average(anime)
-    _safe_cache(cache.set, _avg_rating_key(anime), _encode_average(value), AVG_RATING_TTL)
-    return value
+    
+    _safe_cache(cache.delete, _avg_rating_key(anime))
+    return _compute_average(anime)
 
 
 def _compute_average(anime) -> float | None:
@@ -143,15 +139,17 @@ def anime_list() -> list[dict]:
     return value
 
 
-def total_views(anime) -> int:
-    key = _views_key(anime)
-    cached = _safe_cache(cache.get, key)
-    if cached is not None:
-        return cached
-
-    value = anime.views.count()
-    _safe_cache(cache.set, key, value, VIEWS_COUNT_TTL)
-    return value
+def purge_view_history(*, batch_size: int) -> int:
+    # история нужна только для окна дедупликации, число просмотров хранит total_views
+    cutoff = timezone.now() - VIEW_DEDUP_WINDOW
+    expired = list(
+        ViewHistory.objects.filter(viewed_at__lt=cutoff)
+        .order_by()
+        .values_list("pk", flat=True)[:batch_size]
+    )
+    if expired:
+        ViewHistory.objects.filter(pk__in=expired).delete()
+    return len(expired)
 
 
 def _safe_cache(operation, *args):

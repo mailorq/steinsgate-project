@@ -15,9 +15,11 @@ import random
 from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Count, F, Q
 
 from catalog.models import AnimeDescription, AnimeRating, ViewHistory
 from comments.models import Comment, CommentLike
+from comments.services import recount_reactions
 
 USERNAME_PREFIX = "loadtest_"
 DEFAULT_PASSWORD = "loadtest-pass-12345"
@@ -69,6 +71,7 @@ class Command(BaseCommand):
 
         self._seed(users=options["users"], comments_per_title=options["comments"])
 
+    @transaction.atomic
     def _flush(self):
         qs = User.objects.filter(username__startswith=USERNAME_PREFIX)
         count = qs.count()
@@ -76,19 +79,22 @@ class Command(BaseCommand):
         # ViewHistory.user = SET_NULL: если сначала удалить юзеров, их просмотры
         # осиротеют и потеряют признак принадлежности. поэтому удаляем просмотры
         # тест-юзеров до самих юзеров, пока FK еще указывает на них
-        by_user, _ = ViewHistory.objects.filter(
-            user__username__startswith=USERNAME_PREFIX
-        ).delete()
+        seeded_views = ViewHistory.objects.filter(
+            Q(user__username__startswith=USERNAME_PREFIX) | Q(ip_address="203.0.113.0")
+        )
+        # total_views не пересчитывается из истории: вычитаем ровно удаляемые строки
+        for row in seeded_views.order_by().values("anime").annotate(total=Count("pk")):
+            AnimeDescription.objects.filter(pk=row["anime"]).update(
+                total_views=F("total_views") - row["total"]
+            )
+        views_deleted, _ = seeded_views.delete()
 
         # комментарии, реакции и оценки уйдут каскадом вместе с юзерами
         qs.delete()
 
-        # анонимные seed-просмотры помечены служебным ip
-        by_marker, _ = ViewHistory.objects.filter(ip_address="203.0.113.0").delete()
-
         self.stdout.write(
             self.style.SUCCESS(
-                f"Удалено тест-юзеров: {count}, просмотров: {by_user + by_marker}"
+                f"Удалено тест-юзеров: {count}, просмотров: {views_deleted}"
             )
         )
 
@@ -186,6 +192,7 @@ class Command(BaseCommand):
                     CommentLike(user=user, comment=comment, is_like=random.random() > 0.3)
                 )
         CommentLike.objects.bulk_create(likes, batch_size=1000, ignore_conflicts=True)
+        recount_reactions(Comment.objects.filter(pk__in=[comment.pk for comment in comments]))
 
     def _seed_ratings(self, titles, pool):
         ratings = []
@@ -206,4 +213,7 @@ class Command(BaseCommand):
             viewers = random.sample(pool, k=min(len(pool), 300))
             for user in viewers:
                 views.append(ViewHistory(anime=title, user=user, ip_address="203.0.113.0"))
+            AnimeDescription.objects.filter(pk=title.pk).update(
+                total_views=F("total_views") + len(viewers)
+            )
         ViewHistory.objects.bulk_create(views, batch_size=1000)

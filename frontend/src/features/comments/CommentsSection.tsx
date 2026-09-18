@@ -17,13 +17,23 @@ interface CommentsSectionProps {
   animeSlug: string;
 }
 
+interface Warning {
+  title: string;
+  text: string;
+  fromComposer?: boolean;
+}
+
+function warningText(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback;
+}
+
 export function CommentsSection({ animeSlug }: CommentsSectionProps) {
   const { user } = useSession();
   const queryClient = useQueryClient();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [page, setPage] = useState(1);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [warning, setWarning] = useState<Warning | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CommentOut | null>(null);
   const [isOpen, setIsOpen] = useState(() => localStorage.getItem(COMMENTS_OPEN_KEY) === "1");
 
@@ -42,11 +52,11 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
       queryClient.invalidateQueries({ queryKey: ["comments", animeSlug] });
     },
     onError: (requestError) => {
-      setWarning(
-        requestError instanceof ApiError
-          ? requestError.message
-          : "Не удалось отправить комментарий",
-      );
+      setWarning({
+        title: "Комментарий не отправлен",
+        text: warningText(requestError, "Не удалось отправить комментарий"),
+        fromComposer: true,
+      });
     },
   });
 
@@ -75,6 +85,15 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
         };
       });
     },
+    onError: (requestError) => {
+      if (requestError instanceof ApiError && requestError.status === 404) {
+        queryClient.invalidateQueries({ queryKey: ["comments", animeSlug] });
+      }
+      setWarning({
+        title: "Реакция не сохранена",
+        text: warningText(requestError, "Не удалось сохранить реакцию"),
+      });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -92,9 +111,12 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
       );
       queryClient.invalidateQueries({ queryKey: ["comments", animeSlug] });
     },
-    onError: () => {
+    onError: (requestError) => {
       setPendingDelete(null);
-      setWarning("Не удалось удалить комментарий");
+      setWarning({
+        title: "Комментарий не удален",
+        text: warningText(requestError, "Не удалось удалить комментарий"),
+      });
     },
   });
 
@@ -131,8 +153,11 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
   }
 
   function closeWarning() {
+    const fromComposer = warning?.fromComposer;
     setWarning(null);
-    textareaRef.current?.focus();
+    if (fromComposer) {
+      textareaRef.current?.focus();
+    }
   }
 
   function handleSubmit(event: FormEvent) {
@@ -143,7 +168,7 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
     const trimmed = text.trim();
     const rejection = checkComment(trimmed);
     if (rejection) {
-      setWarning(rejection);
+      setWarning({ title: "Комментарий не отправлен", text: rejection, fromComposer: true });
       return;
     }
     createMutation.mutate(trimmed);
@@ -258,15 +283,17 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
         </div>
       </div>
 
-      <Modal open={warning !== null} title="Комментарий не отправлен" onClose={closeWarning}>
-        <p className="text-sm leading-relaxed text-zinc-400">{warning}</p>
-        <p className="mt-2 text-sm text-zinc-500">Отредактируйте текст и попробуйте снова.</p>
+      <Modal open={warning !== null} title={warning?.title ?? ""} onClose={closeWarning}>
+        <p className="text-sm leading-relaxed text-zinc-400">{warning?.text}</p>
+        {warning?.fromComposer && (
+          <p className="mt-2 text-sm text-zinc-500">Отредактируйте текст и попробуйте снова.</p>
+        )}
         <button
           type="button"
           onClick={closeWarning}
           className="mt-5 w-full rounded-lg bg-amber-500 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition-all duration-200 hover:bg-amber-400 active:scale-[0.98]"
         >
-          Исправить
+          {warning?.fromComposer ? "Исправить" : "Понятно"}
         </button>
       </Modal>
 

@@ -19,6 +19,8 @@ services:
       API_WRITE_THROTTLE_SUSTAINED: "1000000/h"
       API_VIEW_THROTTLE: "1000000/m"
       API_VIEW_THROTTLE_SUSTAINED: "1000000/h"
+      API_PROGRESS_THROTTLE: "1000000/m"
+      API_PROGRESS_THROTTLE_SUSTAINED: "1000000/h"
       # конкурентность под нагрузку: 4 воркера x 8 потоков = до 32 запросов
       GUNICORN_WORKERS: "4"
       GUNICORN_THREADS: "8"

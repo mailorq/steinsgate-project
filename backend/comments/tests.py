@@ -1,13 +1,19 @@
+from contextlib import ExitStack
+from unittest.mock import patch
+
+from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.core.cache.backends.locmem import LocMemCache
 from django.db import connection
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.test.utils import CaptureQueriesContext
 
 from accounts.tests import csrf_headers
 from catalog.models import AnimeDescription
 
 from . import moderation, services
-from .models import Comment
+from .api import WRITE_THROTTLES
+from .models import Comment, CommentLike
 
 User = get_user_model()
 
@@ -37,20 +43,142 @@ class CommentServiceTest(TestCase):
 
         self.assertEqual(comment.text, 'Tuturu, Okabe!')
 
+    def test_plain_characters_are_stored_unescaped(self):
+        comment = services.create_comment(
+            user=self.user, anime=self.anime, text='5 > 3 && 2 < 4, Steins;Gate & Chaos;Head'
+        )
+
+        self.assertEqual(comment.text, '5 > 3 && 2 < 4, Steins;Gate & Chaos;Head')
+
     def test_toggle_reaction_switches_and_removes(self):
         comment = services.create_comment(
             user=self.user, anime=self.anime, text='El Psy Kongroo'
         )
         other = User.objects.create_user(username='daru', password='super_haker')
 
-        result = services.toggle_reaction(user=other, comment=comment, is_like=True)
+        result = services.toggle_reaction(user=other, comment_id=comment.pk, is_like=True)
         self.assertEqual((result['likes'], result['dislikes']), (1, 0))
 
-        result = services.toggle_reaction(user=other, comment=comment, is_like=False)
+        result = services.toggle_reaction(user=other, comment_id=comment.pk, is_like=False)
         self.assertEqual((result['likes'], result['dislikes']), (0, 1))
 
-        result = services.toggle_reaction(user=other, comment=comment, is_like=False)
+        result = services.toggle_reaction(user=other, comment_id=comment.pk, is_like=False)
         self.assertEqual((result['likes'], result['dislikes']), (0, 0))
+
+    def test_toggle_reaction_stores_counters_on_comment(self):
+        comment = Comment.objects.create(user=self.user, anime=self.anime, text='El Psy Kongroo')
+        daru, mayuri, kurisu = (
+            User.objects.create_user(username=name) for name in ('daru', 'mayuri', 'kurisu')
+        )
+
+        services.toggle_reaction(user=daru, comment_id=comment.pk, is_like=True)
+        services.toggle_reaction(user=mayuri, comment_id=comment.pk, is_like=True)
+        services.toggle_reaction(user=kurisu, comment_id=comment.pk, is_like=False)
+        result = services.toggle_reaction(user=mayuri, comment_id=comment.pk, is_like=False)
+
+        comment.refresh_from_db()
+        self.assertEqual((comment.likes_count, comment.dislikes_count), (1, 2))
+        self.assertEqual(result, {'likes': 1, 'dislikes': 2, 'rating': -1})
+
+    def test_toggle_reaction_locks_author_before_the_comment(self):
+        # удаление пользователя берет строки в том же порядке, обратный дает дедлок
+        comment = Comment.objects.create(user=self.user, anime=self.anime, text='El Psy Kongroo')
+        daru = User.objects.create_user(username='daru')
+
+        with CaptureQueriesContext(connection) as captured:
+            services.toggle_reaction(user=daru, comment_id=comment.pk, is_like=True)
+
+        selects = [query['sql'] for query in captured.captured_queries if 'SELECT' in query['sql']]
+        self.assertIn('auth_user', selects[0])
+        self.assertIn('comments_comment', selects[1])
+
+    def test_reaction_of_a_deleted_author_changes_nothing(self):
+        comment = Comment.objects.create(user=self.user, anime=self.anime, text='El Psy Kongroo')
+        daru = User.objects.create_user(username='daru')
+        stale = User.objects.get(pk=daru.pk)
+        daru.delete()
+
+        self.assertIsNone(services.toggle_reaction(user=stale, comment_id=comment.pk, is_like=True))
+        self.assertFalse(CommentLike.objects.exists())
+
+    def test_toggle_reaction_on_missing_comment_returns_none(self):
+        self.assertIsNone(services.toggle_reaction(user=self.user, comment_id=999, is_like=True))
+        self.assertFalse(CommentLike.objects.exists())
+
+    def test_recount_reactions_restores_counters(self):
+        comment = Comment.objects.create(
+            user=self.user, anime=self.anime, text='El Psy Kongroo', likes_count=7
+        )
+        daru, mayuri = (User.objects.create_user(username=name) for name in ('daru', 'mayuri'))
+        CommentLike.objects.create(user=daru, comment=comment, is_like=False)
+        CommentLike.objects.create(user=mayuri, comment=comment, is_like=False)
+
+        services.recount_reactions(Comment.objects.filter(pk=comment.pk))
+
+        comment.refresh_from_db()
+        self.assertEqual((comment.likes_count, comment.dislikes_count), (0, 2))
+
+
+class CommentAdminTest(TestCase):
+
+    def test_saving_comment_keeps_counters_changed_meanwhile(self):
+        author = User.objects.create_user(username='okabe')
+        anime = AnimeDescription.objects.get(slug='steins-gate')
+        comment = Comment.objects.create(user=author, anime=anime, text='El Psy Kongroo')
+        stale = Comment.objects.get(pk=comment.pk)
+        services.toggle_reaction(
+            user=User.objects.create_user(username='daru'), comment_id=comment.pk, is_like=True
+        )
+
+        request = RequestFactory().post('/admin/')
+        request.user = User.objects.create_superuser(username='admin', password='admin_pass_123')
+        model_admin = admin.site.get_model_admin(Comment)
+        form = model_admin.get_form(request, stale)(
+            data={'user': author.pk, 'anime': anime.pk, 'text': 'Tuturu'}, instance=stale
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        model_admin.save_model(request, form.save(commit=False), form, change=True)
+
+        comment.refresh_from_db()
+        self.assertEqual((comment.text, comment.likes_count), ('Tuturu', 1))
+
+
+class DeletedUserReactionsTest(TestCase):
+
+    def setUp(self):
+        anime = AnimeDescription.objects.get(slug='steins-gate')
+        author = User.objects.create_user(username='okabe')
+        self.first = Comment.objects.create(user=author, anime=anime, text='El Psy Kongroo')
+        self.second = Comment.objects.create(user=author, anime=anime, text='Tuturu')
+        self.daru, self.mayuri, self.kurisu = (
+            User.objects.create_user(username=name) for name in ('daru', 'mayuri', 'kurisu')
+        )
+
+    def react(self, user, comment, is_like):
+        services.toggle_reaction(user=user, comment_id=comment.pk, is_like=is_like)
+
+    def counters(self, comment):
+        comment.refresh_from_db()
+        return comment.likes_count, comment.dislikes_count
+
+    def test_deleted_user_reactions_leave_counters(self):
+        self.react(self.daru, self.first, is_like=False)
+        self.react(self.kurisu, self.first, is_like=True)
+        self.react(self.daru, self.second, is_like=True)
+
+        self.daru.delete()
+
+        self.assertEqual(self.counters(self.first), (1, 0))
+        self.assertEqual(self.counters(self.second), (0, 0))
+
+    def test_bulk_user_deletion_releases_each_reaction_once(self):
+        self.react(self.daru, self.first, is_like=True)
+        self.react(self.mayuri, self.first, is_like=True)
+        self.react(self.kurisu, self.first, is_like=False)
+
+        User.objects.filter(pk__in=[self.daru.pk, self.mayuri.pk]).delete()
+
+        self.assertEqual(self.counters(self.first), (0, 1))
 
 
 class ModerationTest(TestCase):
@@ -154,6 +282,24 @@ class CommentDeleteTest(TestCase):
         response = self.client.delete(f'/api/comments/{self.comment.id}')
 
         self.assertEqual(response.status_code, 401)
+
+    def test_deletion_is_throttled(self):
+        self.client.login(username='okabe', password='elpsykongroo')
+        spare = Comment.objects.create(user=self.author, anime=self.anime, text='Tuturu tuturu')
+
+        with ExitStack() as limits:
+            for throttle in WRITE_THROTTLES:
+                limits.enter_context(patch.object(throttle, 'num_requests', 1))
+                limits.enter_context(
+                    patch.object(throttle, 'cache', LocMemCache(f'write-{id(self)}', {}))
+                )
+            first = self.delete()
+            blocked = self.client.delete(
+                f'/api/comments/{spare.id}', **csrf_headers(self.client)
+            )
+
+        self.assertEqual(first.status_code, 204)
+        self.assertEqual(blocked.status_code, 429)
 
     def test_can_delete_flag_in_listing(self):
         listing_url = '/api/anime/steins-gate/comments'
@@ -320,3 +466,16 @@ class CommentsApiTest(TestCase):
 
         listed = self.client.get(self.url).json()
         self.assertEqual(listed['items'][0]['my_reaction'], 'like')
+        self.assertEqual(listed['items'][0]['likes'], 1)
+
+    def test_reaction_on_missing_comment_returns_404(self):
+        headers = self.login()
+
+        response = self.client.post(
+            '/api/comments/999/reaction',
+            {'is_like': True},
+            content_type='application/json',
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 404)

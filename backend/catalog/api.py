@@ -37,7 +37,7 @@ def anime_stats(request, slug: str):
     return {
         "slug": anime.slug,
         "avg_rating": services.average_rating(anime),
-        "total_views": services.total_views(anime),
+        "total_views": anime.total_views,
         "user_rating": user_rating,
     }
 

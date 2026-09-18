@@ -286,6 +286,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'config.middleware.StaffOnlyAdminMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -396,6 +397,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "accounts.tasks.purge_expired_registrations",
         "schedule": timedelta(hours=1),
     },
+    "purge-view-history": {
+        "task": "catalog.tasks.purge_view_history",
+        "schedule": timedelta(hours=1),
+    },
     "clear-expired-sessions": {
         "task": "accounts.tasks.clear_expired_sessions",
         "schedule": timedelta(days=1),
@@ -410,6 +415,9 @@ API_WRITE_THROTTLE_SUSTAINED = os.environ.get("API_WRITE_THROTTLE_SUSTAINED", "3
 # Просмотр пишется отдельным POST, поэтому лимит не должен делить счетчик с оценками и комментариями.
 API_VIEW_THROTTLE = os.environ.get("API_VIEW_THROTTLE", "30/m")
 API_VIEW_THROTTLE_SUSTAINED = os.environ.get("API_VIEW_THROTTLE_SUSTAINED", "300/h")
+# плеер досылает прогресс каждые несколько секунд, поэтому лимит у него свой
+API_PROGRESS_THROTTLE = os.environ.get("API_PROGRESS_THROTTLE", "30/m")
+API_PROGRESS_THROTTLE_SUSTAINED = os.environ.get("API_PROGRESS_THROTTLE_SUSTAINED", "600/h")
 # Повторная отправка кода: строгий отдельный лимит на IP.
 API_RESEND_THROTTLE = os.environ.get("API_RESEND_THROTTLE", "5/h")
 
@@ -434,6 +442,8 @@ if TESTING:
     API_WRITE_THROTTLE_SUSTAINED = "10000/h"
     API_VIEW_THROTTLE = "10000/m"
     API_VIEW_THROTTLE_SUSTAINED = "10000/h"
+    API_PROGRESS_THROTTLE = "10000/m"
+    API_PROGRESS_THROTTLE_SUSTAINED = "10000/h"
     API_RESEND_THROTTLE = "10000/h"
     CELERY_BROKER_URL = "memory://"
     CELERY_TASK_ALWAYS_EAGER = True

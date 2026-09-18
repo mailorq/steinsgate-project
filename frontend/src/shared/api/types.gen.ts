@@ -1076,6 +1076,15 @@ export interface operations {
                     "application/json": components["schemas"]["ReactionOut"];
                 };
             };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageOut"];
+                };
+            };
         };
     };
     watch_api_get_progress: {

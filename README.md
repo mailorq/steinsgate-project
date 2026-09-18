@@ -11,7 +11,7 @@ browser
    |
    v
 nginx (frontend container, :4173)
-   |                    security headers + CSP, rate limit on /admin/
+   |                    security headers + CSP
    |-- /                SPA; index.html is revalidated on every load
    |-- /assets/         hashed bundles, cached as immutable
    |-- /img/            posters and backgrounds (WebP)
@@ -63,13 +63,14 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 - One address receives at most 6 verification letters per hour across registrations and resends. The counter is keyed by an HMAC of the address.
 - Rotating `SECRET_KEY` invalidates pending codes and sessions.
 - `auth_user.email` has a partial case-insensitive unique index.
+- The Django admin redirects anyone it does not admit to `/steins-gate`, its own login form included, the same response an unmatched frontend route gets from the SPA router. Staff sign in on the site through `/api/auth/login`, which has the IP lockout and throttles, and the same session opens `/admin/` (`config/middleware.py`).
+- Registration names a taken username or email explicitly. Usernames are public in comments, and hiding a taken email needs a letter to its owner instead of an error, which the site does not send.
 
 ### Abuse control
 
 - The client IP is read from the trusted right side of `X-Forwarded-For`: one hop in demo, two in production (host TLS proxy and compose nginx).
-- Auth endpoints, writes and view events have per-minute and per-hour limits, resend has an hourly limit. Counters live in Redis and are shared by all gunicorn workers.
+- Auth endpoints, writes, view events and watch progress have per-minute and per-hour limits, resend has an hourly limit. Every limit is a fixed window counted by an atomic increment in Redis, so the count is the same for all gunicorn workers and threads. django-ninja keeps its own counter on the throttle object, which one process shares between concurrent requests, so the project replaces that part.
 - IP lockout on login and code entry: 5 failures block for 30 seconds, every fourth series blocks for 10 minutes, success resets the counter.
-- nginx rate-limits `/admin/`, which is outside the application lockout.
 - With Redis unavailable, writes and view events continue without limits. Registration, login, code verification and resend return `503`. Attempt and resend limits in PostgreSQL still apply.
 
 ### Input and uploads
@@ -87,7 +88,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 
 ## Caching and logging
 
-Redis caches the average rating, view counters and the title list. A view is registered by a CSRF-protected `POST`. PostgreSQL decides under an advisory lock whether the view is new within 24 hours; Redis keeps a marker for the rest of that window. User-specific data is not cached.
+Redis caches the average rating and the title list. A view is registered by a CSRF-protected `POST`. PostgreSQL decides under an advisory lock whether the view is new within 24 hours; Redis keeps a marker for the rest of that window. User-specific data is not cached.
 
 Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handled by the Docker `local` logging driver. Local runs write `application.log`, `security.log` and `error.log` to `backend/logs/`, `access.log` only under `runserver`.
 
@@ -98,6 +99,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 | `send_verification_code` | `email` | registration and resend, after commit |
 | `reconcile_verification_delivery` | `email` | Beat, every minute |
 | `purge_expired_registrations` | `maintenance` | Beat, hourly, batches of 1000 until the backlog is empty |
+| `purge_view_history` | `maintenance` | Beat, hourly, deletes views older than the 24-hour window in batches of 5000, at most 100 batches per run |
 | `clear_expired_sessions` | `maintenance` | Beat, daily |
 
 - **Retries:** SMTP 4xx replies, disconnects, timeouts and connection errors are retried up to 5 times with exponential backoff (15 s base, 180 s cap, full jitter). 5xx replies and authentication errors set `delivery_failed_at` without retry. The retry window fits into the 15-minute code TTL, an expired code is not sent.
@@ -145,11 +147,21 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 ### Concurrency control and locking
 
-**Where:** `select_for_update` in `accounts/services.py` (`verify_email`, `resend_verification`, `purge_expired_registrations`); PostgreSQL advisory lock in `catalog/services.py::_acquire_view_dedup_lock`.
+**Where:** `select_for_update` in `accounts/services.py` (`verify_email`, `resend_verification`, `purge_expired_registrations`), `comments/services.py::toggle_reaction` and `comments/signals.py`; PostgreSQL advisory lock in `catalog/services.py::_acquire_view_dedup_lock`.
 
-**Problem:** attempt counters and resend limits are read, checked and written back. Without a lock, parallel requests read the same value and the limit does not trigger. Parallel view events for the same viewer create duplicate rows.
+**Problem:** attempt counters and resend limits are read, checked and written back. Without a lock, parallel requests read the same value and the limit does not trigger. Parallel reactions to one comment decide between add, switch and remove from a stale reaction. Parallel view events for the same viewer create duplicate rows.
 
-**Solution:** pessimistic row locks for verification and resend, an advisory lock keyed by title and viewer for view deduplication. The transactions are short and contended by a single user, so blocking is cheaper than optimistic retries.
+**Solution:** pessimistic row locks for verification, resend and the reacted comment, an advisory lock keyed by title and viewer for view deduplication. A reaction and a user deletion both lock the user's row before any comment row. The shared order rules out a deadlock, and a reaction of a user being deleted waits for the deletion instead of landing between the recount and the cascade. The transactions are short and contended by a single user, so blocking is cheaper than optimistic retries.
+
+### Denormalized counters and view history rotation
+
+**Where:** `comments/models.py::Comment` (`likes_count`, `dislikes_count`), `catalog/models.py::AnimeDescription.total_views`, `comments/signals.py`, `catalog/services.py::purge_view_history`, `catalog/tasks.py`.
+
+**Problem:** a comment page counted reactions for every comment of the title before `LIMIT`. With 100 000 comments and 400 000 reactions the first page took 113 ms: a parallel scan of all reactions and a sort on disk. The view count was `count(*)` over `ViewHistory`, so the history could not be trimmed and grew with every view.
+
+**Solution:** the counters are columns updated with `F()` in the transaction that writes the reaction or the view. The page query became an index scan on `comments_page_idx` (`anime, -created_at, -id`) with `LIMIT`, 0.2 ms on the same data. Deleting a user removes reactions by cascade past the service, so a `pre_delete` handler locks the affected comments and decrements their counters in the same transaction. `ViewHistory` only serves the 24-hour deduplication window; Beat deletes older rows by primary key in batches. The migrations fill the counters from existing rows.
+
+**Trade-off:** after rotation `total_views` cannot be recomputed from history. Reactions inserted past the service, for example by `bulk_create`, are repaired by `python manage.py recount_reactions` (`--anime <slug>` narrows it to one title). New views of one title wait for each other on the title row between the counter update and commit.
 
 ### Cache-aside with fail-open fallback
 
@@ -157,7 +169,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 **Problem:** aggregate queries run on every page view, and a Redis outage must not take the site down. A read that computed the average before a vote commits can overwrite the fresh value.
 
-**Solution:** a vote writes the recomputed average; reads fill a missing key with `add` and never overwrite. Counters and the title list expire by TTL. Every cache call goes through `_safe_cache` and falls back to PostgreSQL. Throttles use `FailOpenMixin` for regular endpoints and `FailClosedMixin` for authentication, each limit window with its own cache scope.
+**Solution:** a vote drops the cached average instead of writing the value it computed, otherwise a vote that read the aggregate earlier but finished later would leave a stale average for the whole TTL. Reads fill a missing key with `add` and never overwrite, and the TTL bounds how long a read that straddled a vote can stay. The title list expires by TTL. Every cache call goes through `_safe_cache` and falls back to PostgreSQL. Throttles use `FailOpenMixin` for regular endpoints and `FailClosedMixin` for authentication, each limit window with its own cache scope.
 
 ### Client-side facade
 
@@ -174,7 +186,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 ├── backend/
 │   ├── config/          # settings, urls, api root, Celery app, throttling
 │   ├── accounts/        # auth, email verification, Celery tasks, profiles, IP lockout, management commands
-│   ├── catalog/         # titles, ratings, view history, aggregate cache
+│   ├── catalog/         # titles, ratings, view counter and history rotation, aggregate cache
 │   ├── comments/        # comments, reactions, spam filter
 │   ├── watch/           # watch progress
 │   ├── loadtest/        # Locust scenario and runner script
@@ -228,7 +240,7 @@ Secrets must not contain `$`: `docker compose` interpolates it.
 | `NINJA_NUM_PROXIES` | Trusted proxy hops: `1` in demo, `2` in production |
 | `SESSION_COOKIE_AGE` | Session lifetime in seconds, default 14 days |
 | `LOG_TO_FILES` | Write log files to `backend/logs/`, default `True`; the Docker image sets `False` |
-| `API_AUTH_THROTTLE`, `API_AUTH_THROTTLE_SUSTAINED`, `API_RESEND_THROTTLE`, `API_WRITE_THROTTLE`, `API_WRITE_THROTTLE_SUSTAINED`, `API_VIEW_THROTTLE`, `API_VIEW_THROTTLE_SUSTAINED` | Rate limit overrides |
+| `API_AUTH_THROTTLE`, `API_AUTH_THROTTLE_SUSTAINED`, `API_RESEND_THROTTLE`, `API_WRITE_THROTTLE`, `API_WRITE_THROTTLE_SUSTAINED`, `API_VIEW_THROTTLE`, `API_VIEW_THROTTLE_SUSTAINED`, `API_PROGRESS_THROTTLE`, `API_PROGRESS_THROTTLE_SUSTAINED` | Rate limit overrides |
 
 ### Docker
 
@@ -242,6 +254,14 @@ python scripts/projectctl.py up
 ```
 
 `migrate` applies migrations and seeds the titles before `backend`, `celery-worker` and `celery-beat` start; `collectstatic` runs on backend start. `up` returns after HTTP 200 from the API, a healthy worker and a running Beat. The site is served at `http://localhost:4173`. Modes and commands: [scripts/README.md](scripts/README.md).
+
+Admin access at `/admin/` is granted to an existing verified account, run from the repository root:
+
+```
+docker compose -p steinsgate_mailor exec backend python manage.py shell -c "from django.contrib.auth.models import User; print(User.objects.filter(username='okabe', is_active=True).update(is_staff=True, is_superuser=True))"
+```
+
+`1` means the account got access, `0` means there is no active account with that name. The account signs in on the site and then opens `/admin/`, everyone else lands on `/steins-gate`.
 
 ### Production proxy
 
@@ -275,7 +295,7 @@ Vite serves the SPA with HMR at `http://localhost:5173`, runserver reloads Djang
 
 Backend: `cd backend`, create a venv, `pip install -r requirements.txt`, `python manage.py migrate`, `python manage.py runserver`. Frontend: `cd frontend`, `npm install`, `npm run dev`; Vite proxies `/api` and `/media` to `127.0.0.1:8000`.
 
-Without `CELERY_BROKER_URL` tasks run inline, so the verification letter is sent during the request. Periodic cleanup is available as `python manage.py purge_expired_registrations` (`--dry-run` reports one batch) and `python manage.py clearsessions`.
+Without `CELERY_BROKER_URL` tasks run inline, so the verification letter is sent during the request. Periodic cleanup is available as `python manage.py purge_expired_registrations` (`--dry-run` reports one batch) and `python manage.py clearsessions`. View history is trimmed only by Beat; by hand: `python manage.py shell -c "from catalog.tasks import purge_view_history; purge_view_history()"`.
 
 ## Testing
 
@@ -307,8 +327,6 @@ CI runs on pushes to `main` and `dev` and on pull requests: backend tests, deplo
 ## Backlog
 
 - Content Security Policy for Django admin pages.
-- Aggregated view counters: `total_views` counts `ViewHistory` rows, so view history has no retention.
-- Comment pages aggregate reactions for every comment of a title before `LIMIT`; select the page ids first once a title accumulates thousands of comments.
 
 ## Author
 
