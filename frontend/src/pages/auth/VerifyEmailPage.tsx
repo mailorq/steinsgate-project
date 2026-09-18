@@ -12,6 +12,16 @@ interface VerificationNavigationState {
   resendAvailableIn?: number;
 }
 
+function formatCooldown(seconds: number): string {
+  if (seconds < 120) {
+    return `${seconds} с`;
+  }
+  if (seconds < 7200) {
+    return `${Math.ceil(seconds / 60)} мин`;
+  }
+  return `${Math.ceil(seconds / 3600)} ч`;
+}
+
 export function VerifyEmailPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -175,7 +185,7 @@ export function VerifyEmailPage() {
           {isResending
             ? "Отправляем…"
             : resendCooldown > 0
-              ? `Повторить через ${resendCooldown} с`
+              ? `Повторить через ${formatCooldown(resendCooldown)}`
               : "Отправить код повторно"}
         </button>
       </div>
