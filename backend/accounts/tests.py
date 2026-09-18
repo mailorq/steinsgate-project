@@ -568,8 +568,7 @@ class SecurityThrottleTest(TransactionTestCase):
         self.assertGreater(throttle.wait(), 0)
 
     def test_parallel_clients_do_not_share_throttle_state(self):
-        # объект троттла переиспользуется между запросами, а gunicorn держит
-        # несколько потоков: состояние на объекте уводило бы запрос в чужой счетчик
+        # gunicorn обслуживает ручку несколькими потоками через один объект троттла
         throttle = SecurityAnonBurstThrottle('10/m')
         throttle.cache = SlowCache(f'throttle-threads-{id(self)}', {})
         factory = RequestFactory()

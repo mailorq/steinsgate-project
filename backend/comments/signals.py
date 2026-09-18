@@ -8,8 +8,8 @@ from .models import Comment, CommentLike
 
 @receiver(pre_delete, sender=settings.AUTH_USER_MODEL)
 def release_reactions_of_deleted_user(sender, instance, **kwargs):
-    # реакции уходят каскадом в обход toggle_reaction, поэтому счётчики уменьшаются здесь, в транзакции удаления и под той же блокировкой комментариев
-    # строка пользователя блокируется первой: иначе его собственный параллельный запрос успеет добавить реакцию между этим пересчётом и каскадным удалением
+    # реакции уходят каскадом в обход toggle_reaction, поэтому счетчики уменьшаются здесь
+    # строка пользователя берется первой, как в toggle_reaction, и его реакции ждут конца удаления
     sender.objects.select_for_update().filter(pk=instance.pk).exists()
     reactions = CommentLike.objects.filter(user=instance)
     locked_comments = (

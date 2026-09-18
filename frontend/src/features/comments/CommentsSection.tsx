@@ -114,7 +114,7 @@ export function CommentsSection({ animeSlug }: CommentsSectionProps) {
     onError: (requestError) => {
       setPendingDelete(null);
       setWarning({
-        title: "Комментарий не удалён",
+        title: "Комментарий не удален",
         text: warningText(requestError, "Не удалось удалить комментарий"),
       });
     },
