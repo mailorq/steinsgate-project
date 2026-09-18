@@ -20,8 +20,10 @@ from django.db import connection, transaction
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 
-from catalog.models import AnimeDescription, AnimeRating, ViewHistory
+from catalog.models import AnimeDescription, AnimeRating
+from catalog.services import register_view_event
 from comments.models import Comment, CommentLike
+from comments.services import recount_reactions
 
 
 class Command(BaseCommand):
@@ -97,8 +99,9 @@ class Command(BaseCommand):
         CommentLike.objects.bulk_create(
             [CommentLike(user=author, comment=c, is_like=True) for c in made]
         )
+        recount_reactions(Comment.objects.filter(pk__in=[c.pk for c in made]))
         AnimeRating.objects.create(user=author, anime=anime, rating=5)
-        ViewHistory.objects.create(anime=anime, user=author, ip_address="203.0.113.0")
+        register_view_event(anime=anime, user=author, ip_address="203.0.113.0")
         return anime
 
     def _measure(self, client: Client, label: str, url: str) -> int:

@@ -14,7 +14,7 @@ from django.utils import timezone
 from accounts.models import EmailDeliveryQuota, EmailVerificationCode, email_delivery_fingerprint
 from catalog import services as catalog_services
 from catalog.models import AnimeDescription, ViewHistory
-from comments.models import Comment
+from comments.models import Comment, CommentLike
 
 
 class SeedLoadtestCommandTest(TestCase):
@@ -65,6 +65,22 @@ class SeedLoadtestCommandTest(TestCase):
         with mock.patch.dict(os.environ, {"LOADTEST": ""}):
             with self.assertRaises(CommandError):
                 call_command("seed_loadtest", "--users", "1", stdout=StringIO())
+
+
+class RecountReactionsCommandTest(TestCase):
+
+    def test_drifted_counters_are_restored(self):
+        anime = AnimeDescription.objects.first()
+        author = User.objects.create_user(username="okabe", password="x")
+        comment = Comment.objects.create(
+            anime=anime, user=author, text="реальный комментарий", likes_count=7
+        )
+        CommentLike.objects.create(user=author, comment=comment, is_like=True)
+
+        call_command("recount_reactions", stdout=StringIO())
+
+        comment.refresh_from_db()
+        self.assertEqual((comment.likes_count, comment.dislikes_count), (1, 0))
 
 
 class ProfileQueriesCommandTest(TestCase):
