@@ -44,7 +44,7 @@ class RegistrationServiceTest(TransactionTestCase):
             username=name, email=f'{name}@gmail.com', password=secrets.token_urlsafe(16)
         )
 
-    @override_settings(EMAIL_DELIVERY_HOURLY_LIMIT=2)
+    @override_settings(EMAIL_DELIVERY_DAILY_LIMIT=2)
     def test_site_delivery_limit_stops_registration(self):
         self.register('daru')
         self.register('mayuri')
@@ -60,7 +60,26 @@ class RegistrationServiceTest(TransactionTestCase):
         )
         self.assertEqual(len(mail.outbox), 2)
 
-    @override_settings(EMAIL_DELIVERY_HOURLY_LIMIT=1)
+    @override_settings(EMAIL_DELIVERY_DAILY_LIMIT=1)
+    def test_site_delivery_limit_holds_for_a_day_and_then_resets(self):
+        self.register('daru')
+        site = EmailDeliveryQuota.objects.get(email_fingerprint=services.SITE_DELIVERY_FINGERPRINT)
+
+        site.window_started_at = timezone.now() - timedelta(hours=23)
+        site.save(update_fields=['window_started_at'])
+        with self.assertRaises(services.SiteDeliveryLimitError) as blocked:
+            self.register('mayuri')
+        self.assertGreater(blocked.exception.retry_after, 3000)
+        self.assertLessEqual(blocked.exception.retry_after, 3600)
+
+        site.window_started_at = timezone.now() - timedelta(hours=25)
+        site.save(update_fields=['window_started_at'])
+        self.register('kurisu')
+
+        site.refresh_from_db()
+        self.assertEqual(site.delivery_count, 1)
+
+    @override_settings(EMAIL_DELIVERY_DAILY_LIMIT=1)
     def test_resend_counts_against_site_delivery_limit(self):
         user = self.register('daru').user
         record = user.verification_code
@@ -344,7 +363,7 @@ class AuthApiTest(TransactionTestCase):
         self.assertGreater(int(response['Retry-After']), 0)
         self.assertFalse(User.objects.filter(username='kurisu').exists())
 
-    @override_settings(EMAIL_DELIVERY_HOURLY_LIMIT=1)
+    @override_settings(EMAIL_DELIVERY_DAILY_LIMIT=1)
     def test_register_returns_retry_after_when_site_limit_is_exhausted(self):
         EmailDeliveryQuota.objects.create(
             email_fingerprint=services.SITE_DELIVERY_FINGERPRINT, delivery_count=1

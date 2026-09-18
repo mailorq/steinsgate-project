@@ -312,9 +312,9 @@ EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "True").lower() in ("true", "1",
 EMAIL_USE_TLS = not EMAIL_USE_SSL
 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
-# потолок писем с кодом на весь сайт за час. любые сутки задевают не больше 25 часовых
-# окон, 18 в час держат расход ниже суточного лимита личного Gmail (около 500 получателей)
-EMAIL_DELIVERY_HOURLY_LIMIT = int(os.environ.get("EMAIL_DELIVERY_HOURLY_LIMIT", "18"))
+# потолок писем с кодом на весь сайт за суточное окно: любые сутки задевают не больше двух окон,
+# 250 держат расход ниже суточного лимита личного Gmail (около 500 получателей)
+EMAIL_DELIVERY_DAILY_LIMIT = int(os.environ.get("EMAIL_DELIVERY_DAILY_LIMIT", "250"))
 
 ROOT_URLCONF = 'config.urls'
 
@@ -451,7 +451,7 @@ if TESTING:
     API_PROGRESS_THROTTLE_SUSTAINED = "10000/h"
     API_RESEND_THROTTLE = "10000/h"
     API_REGISTER_THROTTLE = "10000/h"
-    EMAIL_DELIVERY_HOURLY_LIMIT = 10000
+    EMAIL_DELIVERY_DAILY_LIMIT = 10000
     CELERY_BROKER_URL = "memory://"
     CELERY_TASK_ALWAYS_EAGER = True
 

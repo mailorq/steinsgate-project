@@ -11,6 +11,7 @@ from django.db.models import Count, Q
 from django.test import TestCase
 from django.utils import timezone
 
+from accounts import services
 from accounts.models import EmailDeliveryQuota, EmailVerificationCode, email_delivery_fingerprint
 from catalog import services as catalog_services
 from catalog.models import AnimeDescription, ViewHistory
@@ -142,3 +143,15 @@ class PurgeExpiredRegistrationsCommandTest(TestCase):
 
         self.assertFalse(EmailDeliveryQuota.objects.filter(pk=expired.pk).exists())
         self.assertTrue(EmailDeliveryQuota.objects.filter(pk=current.pk).exists())
+
+    def test_site_delivery_counter_outlives_the_hourly_window(self):
+        site = EmailDeliveryQuota.objects.create(
+            email_fingerprint=services.SITE_DELIVERY_FINGERPRINT,
+            delivery_count=7,
+            window_started_at=timezone.now() - EmailDeliveryQuota.WINDOW - timedelta(hours=1),
+        )
+
+        call_command("purge_expired_registrations", stdout=StringIO())
+
+        site.refresh_from_db()
+        self.assertEqual(site.delivery_count, 7)

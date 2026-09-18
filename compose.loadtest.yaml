@@ -22,7 +22,7 @@ services:
       API_PROGRESS_THROTTLE: "1000000/m"
       API_PROGRESS_THROTTLE_SUSTAINED: "1000000/h"
       API_REGISTER_THROTTLE: "1000000/h"
-      EMAIL_DELIVERY_HOURLY_LIMIT: "1000000"
+      EMAIL_DELIVERY_DAILY_LIMIT: "1000000"
       # конкурентность под нагрузку: 4 воркера x 8 потоков = до 32 запросов
       GUNICORN_WORKERS: "4"
       GUNICORN_THREADS: "8"

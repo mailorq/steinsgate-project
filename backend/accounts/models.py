@@ -134,11 +134,11 @@ class EmailDeliveryQuota(models.Model):
     def __str__(self):
         return f"Email delivery quota #{self.pk}"
 
-    def window_expired(self, now=None) -> bool:
+    def window_expired(self, now=None, window=WINDOW) -> bool:
         now = now or timezone.now()
-        return now >= self.window_started_at + self.WINDOW
+        return now >= self.window_started_at + window
 
-    def window_remaining(self, now=None) -> int:
+    def window_remaining(self, now=None, window=WINDOW) -> int:
         now = now or timezone.now()
-        remaining = self.window_started_at + self.WINDOW - now
+        remaining = self.window_started_at + window - now
         return max(math.ceil(remaining.total_seconds()), 0)
