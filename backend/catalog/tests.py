@@ -169,13 +169,22 @@ class AggregateCacheTest(TestCase):
 
         self.assertEqual(services.average_rating(self.anime), 5.0)
 
-    def test_stale_read_does_not_overwrite_average_written_by_a_vote(self):
+    def test_stale_read_does_not_overwrite_a_cached_average(self):
         services.rate_anime(user=self.user, anime=self.anime, rating=3)
+        self.assertEqual(services.average_rating(self.anime), 3.0)
 
         with patch('catalog.services.cache.get', return_value=None), \
              patch('catalog.services._compute_average', return_value=5.0):
             services.average_rating(self.anime)
 
+        self.assertEqual(services.average_rating(self.anime), 3.0)
+
+    def test_vote_does_not_cache_the_average_it_computed(self):
+        # голос, посчитавший среднее раньше чужого, завершился бы последним и оставил бы в кеше устаревшее значение на весь TTL
+        with patch('catalog.services._compute_average', return_value=5.0):
+            services.rate_anime(user=self.user, anime=self.anime, rating=3)
+
+        self.assertIsNone(cache.get(services._avg_rating_key(self.anime)))
         self.assertEqual(services.average_rating(self.anime), 3.0)
 
     def test_anime_list_endpoint_is_cached(self):

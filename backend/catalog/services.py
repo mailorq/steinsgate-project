@@ -16,16 +16,20 @@ ANIME_LIST_TTL = 300
 
 VIEW_DEDUP_WINDOW = timedelta(hours=24)
 
-AVG_RATING_TTL = 3600
+# среднее пересчитывается читателем, голос только сбрасывает ключ: TTL ограничивает отставание, если чтение легло в кеш уже после чужого голоса
+AVG_RATING_TTL = 300
 
 
 def _avg_rating_key(anime) -> str:
     return f"anime:{anime.id}:avg_rating"
 
 
+def _viewer_identity(viewer, ip_address: str | None) -> str:
+    return f"user:{viewer.pk}" if viewer is not None else f"ip:{ip_address or 'unknown'}"
+
+
 def _view_dedup_key(anime, viewer, ip_address: str | None) -> str:
-    identity = f"user:{viewer.pk}" if viewer is not None else f"ip:{ip_address or 'unknown'}"
-    fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+    fingerprint = hashlib.sha256(_viewer_identity(viewer, ip_address).encode()).hexdigest()
     return f"view-dedup:{anime.pk}:{fingerprint}"
 
 
@@ -34,8 +38,7 @@ def _acquire_view_dedup_lock(*, anime, viewer, ip_address: str | None) -> None:
     if connection.vendor != "postgresql":
         return
 
-    identity = f"user:{viewer.pk}" if viewer is not None else f"ip:{ip_address or 'unknown'}"
-    lock_material = f"{anime.pk}:{identity}".encode()
+    lock_material = f"{anime.pk}:{_viewer_identity(viewer, ip_address)}".encode()
     lock_key = int.from_bytes(
         hashlib.blake2b(lock_material, digest_size=8).digest(),
         byteorder="big",
@@ -100,9 +103,9 @@ def rate_anime(*, user, anime, rating: int) -> float | None:
     AnimeRating.objects.update_or_create(
         user=user, anime=anime, defaults={"rating": rating}
     )
-    value = _compute_average(anime)
-    _safe_cache(cache.set, _avg_rating_key(anime), _encode_average(value), AVG_RATING_TTL)
-    return value
+    
+    _safe_cache(cache.delete, _avg_rating_key(anime))
+    return _compute_average(anime)
 
 
 def _compute_average(anime) -> float | None:
