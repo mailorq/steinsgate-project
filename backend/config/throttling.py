@@ -85,6 +85,10 @@ class SecurityAnonResendThrottle(FailClosedMixin, AtomicWindowMixin, AnonRateThr
     scope = "anon_resend"
 
 
+class SecurityAnonRegisterThrottle(FailClosedMixin, AtomicWindowMixin, AnonRateThrottle):
+    scope = "anon_register"
+
+
 class ViewEventBurstThrottle(FailOpenMixin, AtomicWindowMixin, UserRateThrottle):
     scope = "view_event_burst"
 
@@ -110,6 +114,10 @@ def security_anon_throttles(burst_rate: str, sustained_rate: str) -> list:
 
 def resend_throttles(rate: str) -> list:
     return [SecurityAnonResendThrottle(rate)]
+
+
+def register_throttles(rate: str) -> list:
+    return [SecurityAnonRegisterThrottle(rate)]
 
 
 def view_event_throttles(burst_rate: str, sustained_rate: str) -> list:

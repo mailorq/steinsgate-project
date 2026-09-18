@@ -1,4 +1,5 @@
 import io
+import secrets
 import shutil
 import tempfile
 import threading
@@ -17,8 +18,9 @@ from django.test import Client, RequestFactory, TestCase, TransactionTestCase, o
 from django.utils import timezone
 from PIL import Image
 
-from config.throttling import SecurityAnonBurstThrottle
+from config.throttling import SecurityAnonBurstThrottle, SecurityAnonRegisterThrottle
 
+from . import api as accounts_api
 from . import lockout, services
 from .models import EmailDeliveryQuota, EmailVerificationCode, email_delivery_fingerprint
 
@@ -36,6 +38,39 @@ def code_from_email():
 
 
 class RegistrationServiceTest(TransactionTestCase):
+
+    def register(self, name):
+        return services.register_user(
+            username=name, email=f'{name}@gmail.com', password=secrets.token_urlsafe(16)
+        )
+
+    @override_settings(EMAIL_DELIVERY_HOURLY_LIMIT=2)
+    def test_site_delivery_limit_stops_registration(self):
+        self.register('daru')
+        self.register('mayuri')
+
+        with self.assertRaises(services.SiteDeliveryLimitError):
+            self.register('kurisu')
+
+        self.assertFalse(User.objects.filter(username='kurisu').exists())
+        self.assertFalse(
+            EmailDeliveryQuota.objects.filter(
+                email_fingerprint=email_delivery_fingerprint('kurisu@gmail.com')
+            ).exists()
+        )
+        self.assertEqual(len(mail.outbox), 2)
+
+    @override_settings(EMAIL_DELIVERY_HOURLY_LIMIT=1)
+    def test_resend_counts_against_site_delivery_limit(self):
+        user = self.register('daru').user
+        record = user.verification_code
+        record.last_sent_at = timezone.now() - EmailVerificationCode.RESEND_COOLDOWN
+        record.save(update_fields=['last_sent_at'])
+
+        with self.assertRaises(services.SiteDeliveryLimitError):
+            services.resend_verification(user=user)
+
+        self.assertEqual(len(mail.outbox), 1)
 
     def test_email_domain_validation(self):
         with self.assertRaises(services.RegistrationError):
@@ -308,6 +343,33 @@ class AuthApiTest(TransactionTestCase):
         self.assertEqual(response.status_code, 429)
         self.assertGreater(int(response['Retry-After']), 0)
         self.assertFalse(User.objects.filter(username='kurisu').exists())
+
+    @override_settings(EMAIL_DELIVERY_HOURLY_LIMIT=1)
+    def test_register_returns_retry_after_when_site_limit_is_exhausted(self):
+        EmailDeliveryQuota.objects.create(
+            email_fingerprint=services.SITE_DELIVERY_FINGERPRINT, delivery_count=1
+        )
+
+        response = self.register()
+
+        self.assertEqual(response.status_code, 429)
+        self.assertGreater(int(response['Retry-After']), 0)
+        self.assertFalse(User.objects.filter(username='kurisu').exists())
+
+    def test_registration_has_its_own_per_client_limit(self):
+        throttle = next(
+            item for item in accounts_api.REGISTER_THROTTLES
+            if isinstance(item, SecurityAnonRegisterThrottle)
+        )
+        other = {**self.REGISTER_PAYLOAD, 'username': 'daru', 'email': 'daru@gmail.com'}
+
+        with patch.object(throttle, 'num_requests', 1),              patch.object(throttle, 'cache', LocMemCache(f'register-{id(self)}', {})):
+            first = self.register()
+            second = self.client.post('/api/auth/register', other, content_type='application/json')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 429)
+        self.assertFalse(User.objects.filter(username='daru').exists())
 
     def test_register_rejects_bad_domain(self):
         response = self.client.post(

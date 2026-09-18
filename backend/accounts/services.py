@@ -34,6 +34,8 @@ MAX_AVATAR_SIZE = 8 * 1024 * 1024
 MAX_AVATAR_PIXELS = 16_000_000
 RECONCILE_GRACE = timedelta(minutes=1)
 RECONCILE_BATCH_SIZE = 500
+# общий счетчик сайта в таблице квот: отпечаток адреса это hex HMAC и с ним не совпадет
+SITE_DELIVERY_FINGERPRINT = "site"
 
 
 class RegistrationError(Exception):
@@ -68,6 +70,15 @@ class EmailDeliveryLimitError(Exception):
         self.retry_after = retry_after
         super().__init__(
             "Для этого адреса достигнут лимит отправки кодов. "
+            f"Попробуйте через {retry_after} сек"
+        )
+
+
+class SiteDeliveryLimitError(Exception):
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+        super().__init__(
+            "Отправка кодов временно приостановлена. "
             f"Попробуйте через {retry_after} сек"
         )
 
@@ -110,18 +121,29 @@ def _lock_or_create_email_delivery_quota(fingerprint: str) -> EmailDeliveryQuota
                 continue
 
 
-def _claim_email_delivery_quota(email: str) -> None:
-    quota = _lock_or_create_email_delivery_quota(email_delivery_fingerprint(email))
+def _claim_delivery_quota(fingerprint: str, limit: int) -> int:
+    """Засчитывает письмо в окне под блокировкой строки. 0 разрешает отправку, иначе возвращает секунды до нового окна"""
+    quota = _lock_or_create_email_delivery_quota(fingerprint)
     now = timezone.now()
 
     if quota.window_expired(now):
         quota.delivery_count = 0
         quota.window_started_at = now
-    if quota.delivery_count >= quota.MAX_DELIVERIES:
-        raise EmailDeliveryLimitError(max(quota.window_remaining(now), 1))
+    if quota.delivery_count >= limit:
+        return max(quota.window_remaining(now), 1)
 
     quota.delivery_count += 1
     quota.save(update_fields=["delivery_count", "window_started_at"])
+    return 0
+
+
+def _claim_email_delivery_quota(email: str) -> None:
+    fingerprint = email_delivery_fingerprint(email)
+    if retry_after := _claim_delivery_quota(fingerprint, EmailDeliveryQuota.MAX_DELIVERIES):
+        raise EmailDeliveryLimitError(retry_after)
+    limit = settings.EMAIL_DELIVERY_HOURLY_LIMIT
+    if retry_after := _claim_delivery_quota(SITE_DELIVERY_FINGERPRINT, limit):
+        raise SiteDeliveryLimitError(retry_after)
 
 
 def _is_transient_smtp_error(error: Exception) -> bool:
@@ -261,8 +283,9 @@ def purge_expired_registrations(*, batch_size: int = 1_000, dry_run: bool = Fals
             .order_by("id")
             .values_list("id", flat=True)[:batch_size]
         )
+        # регистрация держит строку адреса и строку сайта, пакет в порядке id встал бы к ним в обратном порядке: занятые строки дочистит следующий запуск
         quota_ids = list(
-            EmailDeliveryQuota.objects.select_for_update()
+            EmailDeliveryQuota.objects.select_for_update(skip_locked=True)
             .filter(window_started_at__lt=quota_cutoff)
             .order_by("id")
             .values_list("id", flat=True)[:batch_size]

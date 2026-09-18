@@ -312,6 +312,9 @@ EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "True").lower() in ("true", "1",
 EMAIL_USE_TLS = not EMAIL_USE_SSL
 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+# потолок писем с кодом на весь сайт за час. любые сутки задевают не больше 25 часовых
+# окон, 18 в час держат расход ниже суточного лимита личного Gmail (около 500 получателей)
+EMAIL_DELIVERY_HOURLY_LIMIT = int(os.environ.get("EMAIL_DELIVERY_HOURLY_LIMIT", "18"))
 
 ROOT_URLCONF = 'config.urls'
 
@@ -415,6 +418,8 @@ API_WRITE_THROTTLE_SUSTAINED = os.environ.get("API_WRITE_THROTTLE_SUSTAINED", "3
 # Просмотр пишется отдельным POST, поэтому лимит не должен делить счетчик с оценками и комментариями.
 API_VIEW_THROTTLE = os.environ.get("API_VIEW_THROTTLE", "30/m")
 API_VIEW_THROTTLE_SUSTAINED = os.environ.get("API_VIEW_THROTTLE_SUSTAINED", "300/h")
+# регистрация отправляет письмо, лимит на клиента держится ниже общего потолка писем
+API_REGISTER_THROTTLE = os.environ.get("API_REGISTER_THROTTLE", "5/h")
 # плеер досылает прогресс каждые несколько секунд, поэтому лимит у него свой
 API_PROGRESS_THROTTLE = os.environ.get("API_PROGRESS_THROTTLE", "30/m")
 API_PROGRESS_THROTTLE_SUSTAINED = os.environ.get("API_PROGRESS_THROTTLE_SUSTAINED", "600/h")
@@ -445,6 +450,8 @@ if TESTING:
     API_PROGRESS_THROTTLE = "10000/m"
     API_PROGRESS_THROTTLE_SUSTAINED = "10000/h"
     API_RESEND_THROTTLE = "10000/h"
+    API_REGISTER_THROTTLE = "10000/h"
+    EMAIL_DELIVERY_HOURLY_LIMIT = 10000
     CELERY_BROKER_URL = "memory://"
     CELERY_TASK_ALWAYS_EAGER = True
 

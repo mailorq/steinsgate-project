@@ -10,7 +10,12 @@ from ninja.security import django_auth
 from ninja.utils import check_csrf
 
 from config.network import get_client_ip
-from config.throttling import auth_throttles, resend_throttles, security_anon_throttles
+from config.throttling import (
+    auth_throttles,
+    register_throttles,
+    resend_throttles,
+    security_anon_throttles,
+)
 
 from . import lockout, services
 from .schemas import (
@@ -30,6 +35,7 @@ profile_router = Router(tags=["profile"])
 AUTH_THROTTLES = security_anon_throttles(
     settings.API_AUTH_THROTTLE, settings.API_AUTH_THROTTLE_SUSTAINED
 )
+REGISTER_THROTTLES = AUTH_THROTTLES + register_throttles(settings.API_REGISTER_THROTTLE)
 WRITE_THROTTLES = auth_throttles(settings.API_WRITE_THROTTLE, settings.API_WRITE_THROTTLE_SUSTAINED)
 RESEND_THROTTLES = resend_throttles(settings.API_RESEND_THROTTLE)
 
@@ -51,6 +57,7 @@ def locked_response(error: lockout.LockedOut) -> tuple:
 def resend_limited_response(
     error: (
         services.EmailDeliveryLimitError
+        | services.SiteDeliveryLimitError
         | services.ResendCooldownError
         | services.ResendLimitError
     ),
@@ -89,7 +96,7 @@ def session(request):
         429: MessageOut,
         503: MessageOut,
     },
-    throttle=AUTH_THROTTLES,
+    throttle=REGISTER_THROTTLES,
 )
 def register(request, payload: RegisterIn):
     if (rejected := csrf_rejected(request)) is not None:
@@ -103,7 +110,7 @@ def register(request, payload: RegisterIn):
         )
     except services.RegistrationError as error:
         return 400, {"detail": str(error)}
-    except services.EmailDeliveryLimitError as error:
+    except (services.EmailDeliveryLimitError, services.SiteDeliveryLimitError) as error:
         return resend_limited_response(error)
 
     request.session["pending_user_id"] = result.user.id
@@ -137,6 +144,7 @@ def resend_verification(request):
         result = services.resend_verification(user=user)
     except (
         services.EmailDeliveryLimitError,
+        services.SiteDeliveryLimitError,
         services.ResendCooldownError,
         services.ResendLimitError,
     ) as error:
