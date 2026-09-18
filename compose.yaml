@@ -4,6 +4,13 @@ x-default-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+x-django-environment: &django-environment
+  DB_ENGINE: django.db.backends.postgresql
+  DB_HOST: db
+  DB_PORT: 5432
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis-broker:6379/0
+
 x-django: &django
   build: ./backend
   restart: unless-stopped
@@ -14,11 +21,9 @@ x-django: &django
   logging: *default-logging
   env_file: .env
   environment:
-    DB_ENGINE: django.db.backends.postgresql
-    DB_HOST: db
-    DB_PORT: 5432
-    REDIS_URL: redis://redis:6379/0
-    CELERY_BROKER_URL: redis://redis-broker:6379/0
+    <<: *django-environment
+    # only the worker sends mail, the other Django processes get no SMTP password
+    EMAIL_HOST_PASSWORD: ""
 
 services:
   db:
@@ -114,6 +119,7 @@ services:
 
   celery-worker:
     <<: *django
+    environment: *django-environment
     command: ["celery", "-A", "config", "worker", "--queues", "email,maintenance", "--pool", "prefork", "--concurrency", "2", "--loglevel", "INFO"]
     tmpfs:
       - /tmp
