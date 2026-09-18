@@ -1,13 +1,19 @@
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from ninja import Router
 from ninja.security import django_auth
 
 from catalog.models import AnimeDescription
+from config.throttling import progress_throttles
 
 from . import services
 from .schemas import ProgressIn, ProgressOut
 
 router = Router(tags=["watch"])
+
+PROGRESS_THROTTLES = progress_throttles(
+    settings.API_PROGRESS_THROTTLE, settings.API_PROGRESS_THROTTLE_SUSTAINED
+)
 
 
 @router.get("/anime/{slug}/progress", response=ProgressOut, auth=django_auth)
@@ -25,7 +31,12 @@ def get_progress(request, slug: str):
     }
 
 
-@router.put("/anime/{slug}/progress", response=ProgressOut, auth=django_auth)
+@router.put(
+    "/anime/{slug}/progress",
+    response=ProgressOut,
+    auth=django_auth,
+    throttle=PROGRESS_THROTTLES,
+)
 def save_progress(request, slug: str, payload: ProgressIn):
     anime = get_object_or_404(AnimeDescription.refs(), slug=slug)
     progress = services.save_progress(

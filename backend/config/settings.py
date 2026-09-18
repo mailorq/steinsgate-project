@@ -414,6 +414,9 @@ API_WRITE_THROTTLE_SUSTAINED = os.environ.get("API_WRITE_THROTTLE_SUSTAINED", "3
 # Просмотр пишется отдельным POST, поэтому лимит не должен делить счетчик с оценками и комментариями.
 API_VIEW_THROTTLE = os.environ.get("API_VIEW_THROTTLE", "30/m")
 API_VIEW_THROTTLE_SUSTAINED = os.environ.get("API_VIEW_THROTTLE_SUSTAINED", "300/h")
+# Плеер досылает прогресс каждые несколько секунд, поэтому у него свой лимит.
+API_PROGRESS_THROTTLE = os.environ.get("API_PROGRESS_THROTTLE", "30/m")
+API_PROGRESS_THROTTLE_SUSTAINED = os.environ.get("API_PROGRESS_THROTTLE_SUSTAINED", "600/h")
 # Повторная отправка кода: строгий отдельный лимит на IP.
 API_RESEND_THROTTLE = os.environ.get("API_RESEND_THROTTLE", "5/h")
 
@@ -438,6 +441,8 @@ if TESTING:
     API_WRITE_THROTTLE_SUSTAINED = "10000/h"
     API_VIEW_THROTTLE = "10000/m"
     API_VIEW_THROTTLE_SUSTAINED = "10000/h"
+    API_PROGRESS_THROTTLE = "10000/m"
+    API_PROGRESS_THROTTLE_SUSTAINED = "10000/h"
     API_RESEND_THROTTLE = "10000/h"
     CELERY_BROKER_URL = "memory://"
     CELERY_TASK_ALWAYS_EAGER = True

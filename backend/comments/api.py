@@ -90,6 +90,7 @@ def create_comment(request, slug: str, payload: CommentIn):
     "/comments/{comment_id}",
     response={204: None, 403: MessageOut},
     auth=django_auth,
+    throttle=WRITE_THROTTLES,
 )
 def delete_comment(request, comment_id: int):
     comment = get_object_or_404(Comment, id=comment_id)
