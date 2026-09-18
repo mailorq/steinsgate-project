@@ -61,7 +61,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 - `register` returns `201` and `resend-verification` returns `200` once the transaction commits. The letter is sent by the Celery worker; the request does not wait for SMTP. A still valid code is resent unchanged.
 - An expired unconfirmed registration releases its username and email. Disabled accounts are excluded from cleanup.
 - One address receives at most 6 verification letters per hour across registrations and resends. The counter is keyed by an HMAC of the address.
-- The whole site sends at most `EMAIL_DELIVERY_HOURLY_LIMIT` verification letters per hour, 18 by default. Any 24 hours touch at most 25 hourly windows, so a personal Gmail account (about 500 recipients a day) stays below its limit. Registration has its own per-client limit (`API_REGISTER_THROTTLE`, 5 per hour), so one client cannot use up the site budget.
+- The whole site sends at most `EMAIL_DELIVERY_DAILY_LIMIT` verification letters per 24-hour window, 250 by default. Any 24 hours touch at most two windows, so a personal Gmail account (about 500 recipients a day) stays below its limit, and a burst of registrations is not held back below that. Registration has its own per-client limit (`API_REGISTER_THROTTLE`, 5 per hour), so one client cannot use up the site budget.
 - Rotating `SECRET_KEY` invalidates pending codes and sessions.
 - `auth_user.email` has a partial case-insensitive unique index.
 - The Django admin redirects anyone it does not admit to `/steins-gate`, its own login form included, the same response an unmatched frontend route gets from the SPA router. Staff sign in on the site through `/api/auth/login`, which has the IP lockout and throttles, and the same session opens `/admin/` (`config/middleware.py`).
@@ -236,7 +236,7 @@ Secrets must not contain `$`: `docker compose` interpolates it.
 | `CELERY_BROKER_URL` | Celery broker; set by compose, tasks run inline in the Django process without it |
 | `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | SMTP credentials (Gmail App Password) |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_SSL`, `EMAIL_TIMEOUT` | SMTP transport, default Gmail over SSL, 10 second timeout |
-| `EMAIL_DELIVERY_HOURLY_LIMIT` | Verification letters per hour for the whole site, default 18 |
+| `EMAIL_DELIVERY_DAILY_LIMIT` | Verification letters per 24-hour window for the whole site, default 250 |
 | `HTTPS_ENABLED` | https redirect, Secure cookies and HSTS, required in production |
 | `API_DOCS_ENABLED` | Serve `/api/docs` and `/api/openapi.json`, default `DEBUG` |
 | `NINJA_NUM_PROXIES` | Trusted proxy hops: `1` in demo, `2` in production |
