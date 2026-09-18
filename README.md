@@ -11,7 +11,7 @@ browser
    |
    v
 nginx (frontend container, :4173)
-   |                    security headers + CSP, rate limit on /admin/
+   |                    security headers + CSP
    |-- /                SPA; index.html is revalidated on every load
    |-- /assets/         hashed bundles, cached as immutable
    |-- /img/            posters and backgrounds (WebP)
@@ -63,13 +63,13 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 - One address receives at most 6 verification letters per hour across registrations and resends. The counter is keyed by an HMAC of the address.
 - Rotating `SECRET_KEY` invalidates pending codes and sessions.
 - `auth_user.email` has a partial case-insensitive unique index.
+- Registration names a taken username or email explicitly. Usernames are public in comments, and hiding a taken email needs a letter to its owner instead of an error, which the site does not send.
 
 ### Abuse control
 
 - The client IP is read from the trusted right side of `X-Forwarded-For`: one hop in demo, two in production (host TLS proxy and compose nginx).
 - Auth endpoints, writes, view events and watch progress have per-minute and per-hour limits, resend has an hourly limit. Every limit is a fixed window counted by an atomic increment in Redis, so the count is the same for all gunicorn workers and threads. django-ninja keeps its own counter on the throttle object, which one process shares between concurrent requests, so the project replaces that part.
 - IP lockout on login and code entry: 5 failures block for 30 seconds, every fourth series blocks for 10 minutes, success resets the counter.
-- nginx rate-limits `/admin/`, which is outside the application lockout.
 - With Redis unavailable, writes and view events continue without limits. Registration, login, code verification and resend return `503`. Attempt and resend limits in PostgreSQL still apply.
 
 ### Input and uploads
@@ -150,7 +150,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 **Problem:** attempt counters and resend limits are read, checked and written back. Without a lock, parallel requests read the same value and the limit does not trigger. Parallel reactions to one comment decide between add, switch and remove from a stale reaction. Parallel view events for the same viewer create duplicate rows.
 
-**Solution:** pessimistic row locks for verification, resend and the reacted comment, an advisory lock keyed by title and viewer for view deduplication. Deleting a user locks that user's row before its counters run, otherwise a request of the same user could add a reaction between the recount and the cascade. The transactions are short and contended by a single user, so blocking is cheaper than optimistic retries.
+**Solution:** pessimistic row locks for verification, resend and the reacted comment, an advisory lock keyed by title and viewer for view deduplication. A reaction and a user deletion both lock the user's row before any comment row. The shared order rules out a deadlock, and a reaction of a user being deleted waits for the deletion instead of landing between the recount and the cascade. The transactions are short and contended by a single user, so blocking is cheaper than optimistic retries.
 
 ### Denormalized counters and view history rotation
 
@@ -253,6 +253,14 @@ python scripts/projectctl.py up
 ```
 
 `migrate` applies migrations and seeds the titles before `backend`, `celery-worker` and `celery-beat` start; `collectstatic` runs on backend start. `up` returns after HTTP 200 from the API, a healthy worker and a running Beat. The site is served at `http://localhost:4173`. Modes and commands: [scripts/README.md](scripts/README.md).
+
+Admin access at `/admin/` is granted to an existing verified account, run from the repository root:
+
+```
+docker compose -p steinsgate_mailor exec backend python manage.py shell -c "from django.contrib.auth.models import User; print(User.objects.filter(username='okabe', is_active=True).update(is_staff=True, is_superuser=True))"
+```
+
+`1` means the account got access, `0` means there is no active account with that name.
 
 ### Production proxy
 
