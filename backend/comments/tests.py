@@ -1,5 +1,9 @@
+from contextlib import ExitStack
+from unittest.mock import patch
+
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.core.cache.backends.locmem import LocMemCache
 from django.db import connection
 from django.test import RequestFactory, TestCase
 from django.test.utils import CaptureQueriesContext
@@ -8,6 +12,7 @@ from accounts.tests import csrf_headers
 from catalog.models import AnimeDescription
 
 from . import moderation, services
+from .api import WRITE_THROTTLES
 from .models import Comment, CommentLike
 
 User = get_user_model()
@@ -38,6 +43,13 @@ class CommentServiceTest(TestCase):
 
         self.assertEqual(comment.text, 'Tuturu, Okabe!')
 
+    def test_plain_characters_are_stored_unescaped(self):
+        comment = services.create_comment(
+            user=self.user, anime=self.anime, text='5 > 3 && 2 < 4, Steins;Gate & Chaos;Head'
+        )
+
+        self.assertEqual(comment.text, '5 > 3 && 2 < 4, Steins;Gate & Chaos;Head')
+
     def test_toggle_reaction_switches_and_removes(self):
         comment = services.create_comment(
             user=self.user, anime=self.anime, text='El Psy Kongroo'
@@ -67,6 +79,27 @@ class CommentServiceTest(TestCase):
         comment.refresh_from_db()
         self.assertEqual((comment.likes_count, comment.dislikes_count), (1, 2))
         self.assertEqual(result, {'likes': 1, 'dislikes': 2, 'rating': -1})
+
+    def test_toggle_reaction_locks_author_before_the_comment(self):
+        # удаление пользователя берет строки в том же порядке, обратный дает дедлок
+        comment = Comment.objects.create(user=self.user, anime=self.anime, text='El Psy Kongroo')
+        daru = User.objects.create_user(username='daru')
+
+        with CaptureQueriesContext(connection) as captured:
+            services.toggle_reaction(user=daru, comment_id=comment.pk, is_like=True)
+
+        selects = [query['sql'] for query in captured.captured_queries if 'SELECT' in query['sql']]
+        self.assertIn('auth_user', selects[0])
+        self.assertIn('comments_comment', selects[1])
+
+    def test_reaction_of_a_deleted_author_changes_nothing(self):
+        comment = Comment.objects.create(user=self.user, anime=self.anime, text='El Psy Kongroo')
+        daru = User.objects.create_user(username='daru')
+        stale = User.objects.get(pk=daru.pk)
+        daru.delete()
+
+        self.assertIsNone(services.toggle_reaction(user=stale, comment_id=comment.pk, is_like=True))
+        self.assertFalse(CommentLike.objects.exists())
 
     def test_toggle_reaction_on_missing_comment_returns_none(self):
         self.assertIsNone(services.toggle_reaction(user=self.user, comment_id=999, is_like=True))
@@ -249,6 +282,24 @@ class CommentDeleteTest(TestCase):
         response = self.client.delete(f'/api/comments/{self.comment.id}')
 
         self.assertEqual(response.status_code, 401)
+
+    def test_deletion_is_throttled(self):
+        self.client.login(username='okabe', password='elpsykongroo')
+        spare = Comment.objects.create(user=self.author, anime=self.anime, text='Tuturu tuturu')
+
+        with ExitStack() as limits:
+            for throttle in WRITE_THROTTLES:
+                limits.enter_context(patch.object(throttle, 'num_requests', 1))
+                limits.enter_context(
+                    patch.object(throttle, 'cache', LocMemCache(f'write-{id(self)}', {}))
+                )
+            first = self.delete()
+            blocked = self.client.delete(
+                f'/api/comments/{spare.id}', **csrf_headers(self.client)
+            )
+
+        self.assertEqual(first.status_code, 204)
+        self.assertEqual(blocked.status_code, 429)
 
     def test_can_delete_flag_in_listing(self):
         listing_url = '/api/anime/steins-gate/comments'

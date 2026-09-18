@@ -1,7 +1,9 @@
+import html
 import logging
 import re
 
 import bleach
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Count, F, IntegerField, OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce
@@ -22,7 +24,8 @@ class CommentRejected(Exception):
 
 
 def create_comment(*, user, anime, text: str) -> Comment:
-    cleaned = bleach.clean(text.strip(), tags=[], strip=True)
+    # bleach не только вырезает теги, но и экранирует & < >, а текст хранится и отдается как есть, поэтому символы возвращаются на место до проверок
+    cleaned = html.unescape(bleach.clean(text.strip(), tags=[], strip=True))
     # Спойлер-маркеры не участвуют в проверках содержимого
     plain = cleaned.replace("||", "")
 
@@ -70,6 +73,11 @@ def toggle_reaction(*, user, comment_id: int, is_like: bool) -> dict | None:
         ("likes_count", "dislikes_count") if is_like else ("dislikes_count", "likes_count")
     )
     with transaction.atomic():
+        # порядок блокировок общий с удалением пользователя: сначала его строка, потом комментарий
+        # в обратном порядке пути сходятся в дедлок, потому что вставка реакции ждет строку пользователя по внешнему ключу
+        if not User.objects.select_for_update().filter(pk=user.pk).exists():
+            return None
+
         # блокировка комментария сериализует реакции на него: решение по текущей реакции и изменение счетчиков не расходятся при параллельных запросах
         comment = Comment.objects.select_for_update().filter(pk=comment_id).first()
         if comment is None:
