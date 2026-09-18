@@ -67,7 +67,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 ### Abuse control
 
 - The client IP is read from the trusted right side of `X-Forwarded-For`: one hop in demo, two in production (host TLS proxy and compose nginx).
-- Auth endpoints, writes and view events have per-minute and per-hour limits, resend has an hourly limit. Counters live in Redis and are shared by all gunicorn workers.
+- Auth endpoints, writes, view events and watch progress have per-minute and per-hour limits, resend has an hourly limit. Every limit is a fixed window counted by an atomic increment in Redis, so the count is the same for all gunicorn workers and threads. django-ninja keeps its own counter on the throttle object, which one process shares between concurrent requests, so the project replaces that part.
 - IP lockout on login and code entry: 5 failures block for 30 seconds, every fourth series blocks for 10 minutes, success resets the counter.
 - nginx rate-limits `/admin/`, which is outside the application lockout.
 - With Redis unavailable, writes and view events continue without limits. Registration, login, code verification and resend return `503`. Attempt and resend limits in PostgreSQL still apply.
@@ -160,7 +160,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 **Solution:** the counters are columns updated with `F()` in the transaction that writes the reaction or the view. The page query became an index scan on `comments_page_idx` (`anime, -created_at, -id`) with `LIMIT`, 0.2 ms on the same data. Deleting a user removes reactions by cascade past the service, so a `pre_delete` handler locks the affected comments and decrements their counters in the same transaction. `ViewHistory` only serves the 24-hour deduplication window; Beat deletes older rows by primary key in batches. The migrations fill the counters from existing rows.
 
-**Trade-off:** after rotation `total_views` cannot be recomputed from history. Reactions inserted past the service, for example by `bulk_create`, need `comments/services.py::recount_reactions`. New views of one title wait for each other on the title row between the counter update and commit.
+**Trade-off:** after rotation `total_views` cannot be recomputed from history. Reactions inserted past the service, for example by `bulk_create`, are repaired by `python manage.py recount_reactions` (`--anime <slug>` narrows it to one title). New views of one title wait for each other on the title row between the counter update and commit.
 
 ### Cache-aside with fail-open fallback
 
@@ -168,7 +168,7 @@ Containers log to stdout (`LOG_TO_FILES=False` in the image); rotation is handle
 
 **Problem:** aggregate queries run on every page view, and a Redis outage must not take the site down. A read that computed the average before a vote commits can overwrite the fresh value.
 
-**Solution:** a vote writes the recomputed average; reads fill a missing key with `add` and never overwrite. The title list expires by TTL. Every cache call goes through `_safe_cache` and falls back to PostgreSQL. Throttles use `FailOpenMixin` for regular endpoints and `FailClosedMixin` for authentication, each limit window with its own cache scope.
+**Solution:** a vote drops the cached average instead of writing the value it computed, otherwise a vote that read the aggregate earlier but finished later would leave a stale average for the whole TTL. Reads fill a missing key with `add` and never overwrite, and the TTL bounds how long a read that straddled a vote can stay. The title list expires by TTL. Every cache call goes through `_safe_cache` and falls back to PostgreSQL. Throttles use `FailOpenMixin` for regular endpoints and `FailClosedMixin` for authentication, each limit window with its own cache scope.
 
 ### Client-side facade
 
@@ -239,7 +239,7 @@ Secrets must not contain `$`: `docker compose` interpolates it.
 | `NINJA_NUM_PROXIES` | Trusted proxy hops: `1` in demo, `2` in production |
 | `SESSION_COOKIE_AGE` | Session lifetime in seconds, default 14 days |
 | `LOG_TO_FILES` | Write log files to `backend/logs/`, default `True`; the Docker image sets `False` |
-| `API_AUTH_THROTTLE`, `API_AUTH_THROTTLE_SUSTAINED`, `API_RESEND_THROTTLE`, `API_WRITE_THROTTLE`, `API_WRITE_THROTTLE_SUSTAINED`, `API_VIEW_THROTTLE`, `API_VIEW_THROTTLE_SUSTAINED` | Rate limit overrides |
+| `API_AUTH_THROTTLE`, `API_AUTH_THROTTLE_SUSTAINED`, `API_RESEND_THROTTLE`, `API_WRITE_THROTTLE`, `API_WRITE_THROTTLE_SUSTAINED`, `API_VIEW_THROTTLE`, `API_VIEW_THROTTLE_SUSTAINED`, `API_PROGRESS_THROTTLE`, `API_PROGRESS_THROTTLE_SUSTAINED` | Rate limit overrides |
 
 ### Docker
 
