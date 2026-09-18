@@ -68,7 +68,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 
 ### Abuse control
 
-- The client IP is read from the trusted right side of `X-Forwarded-For`: one hop in demo, two in production (host TLS proxy and compose nginx).
+- The client IP is read from the trusted right side of `X-Forwarded-For`: one hop in demo, two in production (host TLS proxy and compose nginx). An IPv6 client is its /64 network, the block a provider assigns to one subscriber, so rotating addresses inside it does not reset the lockout, the throttles or view deduplication.
 - Auth endpoints, writes, view events and watch progress have per-minute and per-hour limits, resend has an hourly limit. Every limit is a fixed window counted by an atomic increment in Redis, so the count is the same for all gunicorn workers and threads. django-ninja keeps its own counter on the throttle object, which one process shares between concurrent requests, so the project replaces that part.
 - IP lockout on login and code entry: 5 failures block for 30 seconds, every fourth series blocks for 10 minutes, success resets the counter.
 - With Redis unavailable, writes and view events continue without limits. Registration, login, code verification and resend return `503`. Attempt and resend limits in PostgreSQL still apply.
@@ -82,7 +82,7 @@ The specification is served at `/api/docs` (Swagger UI) and `/api/openapi.json` 
 
 - `DEBUG` defaults to `False`. Startup fails without `SECRET_KEY`.
 - `HTTPS_ENABLED` switches the https redirect, Secure cookies and HSTS together. In production the application listens on loopback, the host TLS proxy is the only entry point.
-- Only `frontend` publishes a port. PostgreSQL, both Redis instances and the Celery containers are on an internal network; the worker reaches SMTP through a separate egress network.
+- Only `frontend` publishes a port. PostgreSQL, both Redis instances and the Celery containers are on an internal network; the worker reaches SMTP through a separate egress network and is the only Django process that gets the SMTP password.
 - Containers run with `no-new-privileges`. Backend, Celery and nginx drop all capabilities and run as non-root. Celery messages are JSON only and carry `user_id` and a dispatch token, never the code.
 - nginx sets `nosniff`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy`, a CSP for the SPA and `default-src 'none'; sandbox` for uploaded files. Django's `SecurityMiddleware` sets headers for `/api/` and `/admin/`.
 
