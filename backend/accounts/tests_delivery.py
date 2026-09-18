@@ -176,6 +176,25 @@ class SendVerificationTaskTest(TransactionTestCase):
                 self.assertEqual(send_mail.call_count, 1)
                 self.assertIsNotNone(record.delivery_failed_at)
 
+    def test_permanent_failure_keeps_the_address_out_of_logs(self):
+        error = smtplib.SMTPRecipientsRefused({"daru@gmail.com": (550, b"no such user")})
+
+        with self.assertLogs("accounts.services", level="ERROR") as logs:
+            self.run_task(side_effect=error)
+
+        self.assertNotIn("daru@gmail.com", chr(10).join(logs.output))
+
+    def test_retry_reason_keeps_the_address_out_of_logs(self):
+        error = smtplib.SMTPRecipientsRefused({"daru@gmail.com": (450, b"mailbox busy")})
+
+        with patch("accounts.services.send_mail", side_effect=error):
+            with self.assertRaises(services.TransientDeliveryError) as raised:
+                services.deliver_verification_code(
+                    user_id=self.user.pk, dispatch_token=self.token
+                )
+
+        self.assertNotIn("daru@gmail.com", str(raised.exception))
+
     def test_backend_accepting_nothing_is_a_failure(self):
         send_mail, record = self.run_task(return_value=0)
 

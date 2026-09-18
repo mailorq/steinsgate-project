@@ -200,9 +200,10 @@ def deliver_verification_code(*, user_id: int, dispatch_token: str) -> None:
             recipient_list=[record.user.email],
         )
     except Exception as error:
+        # ответ сервера и трассировка несут адрес получателя, в лог идет только класс
         if _is_transient_smtp_error(error):
-            raise TransientDeliveryError(str(error)) from error
-        logger.exception("Verification email rejected by the mail server")
+            raise TransientDeliveryError(type(error).__name__) from error
+        logger.error(f"Verification email rejected by the mail server: {type(error).__name__}")
         sent = 0
     else:
         if sent != 1:
