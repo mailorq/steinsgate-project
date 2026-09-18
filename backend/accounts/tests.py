@@ -188,12 +188,20 @@ class LockoutTest(TransactionTestCase):
         cache.clear()
         User.objects.create_user(username='okabe', password='correct_horse_1')
 
-    def login(self, password):
+    def login(self, password, address='127.0.0.1'):
         return self.client.post(
             '/api/auth/login',
             {'username': 'okabe', 'password': password},
             content_type='application/json',
+            REMOTE_ADDR=address,
         )
+
+    def test_rotating_ipv6_inside_one_network_shares_the_block(self):
+        for host in range(1, 6):
+            self.assertEqual(self.login('wrong', f'2001:db8:1:2::{host}').status_code, 400)
+
+        self.assertEqual(self.login('wrong', '2001:db8:1:2:ffff::1').status_code, 429)
+        self.assertEqual(self.login('wrong', '2001:db8:1:3::1').status_code, 400)
 
     def test_soft_block_after_five_failures(self):
         for _ in range(5):
@@ -591,6 +599,18 @@ class SecurityThrottleTest(TransactionTestCase):
         self.assertFalse(
             throttle.allow_request(factory.post('/api/auth/register', REMOTE_ADDR='10.0.0.1'))
         )
+
+    def test_ipv6_rotation_inside_one_network_shares_a_counter(self):
+        throttle = SecurityAnonBurstThrottle('1/m')
+        throttle.cache = LocMemCache(f'throttle-ipv6-{id(self)}', {})
+        factory = RequestFactory()
+
+        def allowed(address):
+            return throttle.allow_request(factory.post('/api/auth/login', REMOTE_ADDR=address))
+
+        self.assertTrue(allowed('2001:db8:1:2::1'))
+        self.assertFalse(allowed('2001:db8:1:2::2'))
+        self.assertTrue(allowed('2001:db8:1:3::1'))
 
     def test_security_throttle_fails_closed(self):
         request = RequestFactory().post('/api/auth/register')

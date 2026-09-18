@@ -2,6 +2,8 @@ import logging
 
 from ninja.throttling import AnonRateThrottle, AuthRateThrottle, UserRateThrottle
 
+from .network import get_client_ip
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,10 @@ class AtomicWindowMixin:
 
     def wait(self) -> float:
         return self.duration - (self.timer() % self.duration)
+
+    # клиент тот же, что у lockout: свой разбор X-Forwarded-For в ninja не сводит IPv6 к /64
+    def get_ident(self, request):
+        return get_client_ip(request)
 
 
 class FailOpenMixin:

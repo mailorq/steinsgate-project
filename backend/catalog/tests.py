@@ -339,6 +339,14 @@ class CatalogApiTest(TestCase):
         self.assertEqual(ViewHistory.objects.count(), 1)
         self.assertEqual(self.client.get('/api/anime/steins-gate').json()['total_views'], 1)
 
+    def test_views_from_one_ipv6_network_count_once(self):
+        for address in ('2001:db8:1:2::1', '2001:db8:1:2::2'):
+            self.client.post(
+                '/api/anime/steins-gate/view', REMOTE_ADDR=address, **csrf_headers(self.client)
+            )
+
+        self.assertEqual(ViewHistory.objects.count(), 1)
+
     def test_view_endpoint_associates_authenticated_user(self):
         user = User.objects.create_user(username='okabe', password='elpsykongroo')
         self.client.login(username='okabe', password='elpsykongroo')

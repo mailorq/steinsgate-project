@@ -36,6 +36,18 @@ class ClientIpTest(TestCase):
     def test_single_proxy_hop(self):
         self.assertEqual(get_client_ip(self._request("203.0.113.7")), "203.0.113.7")
 
+    def test_ipv6_network_is_one_client(self):
+        first = self.factory.get("/", REMOTE_ADDR="2001:db8:1:2:aaaa::1")
+        second = self.factory.get("/", REMOTE_ADDR="2001:db8:1:2:ffff::9")
+        other = self.factory.get("/", REMOTE_ADDR="2001:db8:1:3::1")
+
+        self.assertEqual(get_client_ip(first), "2001:db8:1:2::")
+        self.assertEqual(get_client_ip(first), get_client_ip(second))
+        self.assertNotEqual(get_client_ip(first), get_client_ip(other))
+
+    def test_ipv4_mapped_address_is_ipv4(self):
+        self.assertEqual(get_client_ip(self._request("::ffff:203.0.113.7")), "203.0.113.7")
+
     def test_two_trusted_proxies(self):
         # NINJA_NUM_PROXIES читается ninja один раз при импорте,
         # override_settings до него не доходит.
