@@ -16,14 +16,14 @@ RUN groupadd -g $uid $user && \
     mkdir -p /app/staticfiles /app/media && \
     chown -R $user:$user /app
 
-COPY --chown=$user:$user requirements.txt .
+COPY --chown=$user:$user pyproject.toml .
 
 USER $user
 ENV PATH="/home/$user/.local/bin:$PATH"
 
-RUN pip install --user -r requirements.txt
-
 COPY --chown=$user:$user . .
+
+RUN pip install --user .
 
 EXPOSE 8000
 

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steinsgate-backend"
+version = "1.0.0"
+description = "Steins;Gate fan platform by mailorq"
+authors = [{ name = "mailorq" }]
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "Django==6.0.8",
+    "better-profanity==0.7.0",
+    "bleach==6.4.0",
+    "celery[redis]==5.6.3",
+    "django-ninja==1.6.2",
+    "gunicorn==23.0.0",
+    "pillow==12.3.0",
+    "psycopg2-binary==2.9.11",
+    "python-dotenv==1.2.2",
+    "redis==6.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "locust==2.46.4",
+    "ruff==0.15.20",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["accounts*", "catalog*", "comments*", "config*", "watch*"]

@@ -1,6 +1,6 @@
 # Steins;Gate Fan Platform
 
-Fan site for Steins;Gate: both seasons, the special episode and the movie, user accounts, ratings, watch progress and comments.
+Steins;Gate platform by [mailorq](https://github.com/mailorq): both seasons, the special episode and the movie, user accounts, ratings, watch progress and comments
 
 React SPA, Django + django-ninja API with a service layer, PostgreSQL, Redis, Celery, Docker, nginx.
 
@@ -295,7 +295,7 @@ Vite serves the SPA with HMR at `http://localhost:5173`, runserver reloads Djang
 
 ### Without Docker
 
-Backend: `cd backend`, create a venv, `pip install -r requirements.txt`, `python manage.py migrate`, `python manage.py runserver`. Frontend: `cd frontend`, `npm install`, `npm run dev`; Vite proxies `/api` and `/media` to `127.0.0.1:8000`.
+Backend: `cd backend`, create a venv, `python -m pip install -e ".[dev]"`, `python manage.py migrate`, `python manage.py runserver`. Frontend: `cd frontend`, `npm install`, `npm run dev`; Vite proxies `/api` and `/media` to `127.0.0.1:8000`.
 
 Without `CELERY_BROKER_URL` tasks run inline, so the verification letter is sent during the request. Periodic cleanup is available as `python manage.py purge_expired_registrations` (`--dry-run` reports one batch) and `python manage.py clearsessions`. View history is trimmed only by Beat; by hand: `python manage.py shell -c "from catalog.tasks import purge_view_history; purge_view_history()"`.
 

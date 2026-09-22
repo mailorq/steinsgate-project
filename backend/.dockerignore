@@ -25,4 +25,4 @@ htmlcov/
 
 Dockerfile
 .dockerignore
-requirements-dev.txt
+*.egg-info/

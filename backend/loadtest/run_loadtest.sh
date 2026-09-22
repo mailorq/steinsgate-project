@@ -63,7 +63,7 @@ die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || die "docker не найден в PATH"
 docker info >/dev/null 2>&1 || die "Docker daemon недоступен. Запустите Docker Desktop."
 [ -f "$ROOT_DIR/.env" ] || die ".env не найден в корне. Скопируйте .env.example и заполните."
-"$PYTHON" -c "import locust" 2>/dev/null || die "locust не установлен: pip install -r backend/requirements-dev.txt"
+"$PYTHON" -c "import locust" 2>/dev/null || die "locust не установлен: (cd backend && python -m pip install -e '.[dev]')"
 
 if [ "$DOWN_ONLY" = "1" ]; then
   log "Останавливаю изолированный стек и удаляю его тома"
