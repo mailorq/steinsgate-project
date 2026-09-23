@@ -1,6 +1,7 @@
 import logging
 import os
 import smtplib
+import uuid
 import warnings
 from dataclasses import dataclass
 from datetime import timedelta
@@ -465,6 +466,7 @@ def update_avatar(*, user: User, avatar) -> None:
     finally:
         avatar.seek(0)
 
+    avatar.name = f"avatar_{uuid.uuid4().hex}{extension}"
     profile = user.profile
     previous = profile.avatar.name
     profile.avatar = avatar

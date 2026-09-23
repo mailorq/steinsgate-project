@@ -531,6 +531,23 @@ class ProfileApiTest(TestCase):
         self.user.profile.refresh_from_db()
         self.assertEqual(self.user.profile.nickname, 'Hououin Kyouma')
 
+    def test_avatar_replacements_return_unique_urls(self):
+        urls = []
+        for color in ('red', 'blue', 'green'):
+            buffer = io.BytesIO()
+            Image.new('RGB', (8, 8), color).save(buffer, format='WEBP')
+            upload = SimpleUploadedFile(
+                'avatar.webp', buffer.getvalue(), content_type='image/webp'
+            )
+            response = self.client.post(
+                '/api/profile/avatar', {'avatar': upload}, **csrf_headers(self.client)
+            )
+
+            self.assertEqual(response.status_code, 200)
+            urls.append(response.json()['avatar_url'])
+
+        self.assertEqual(len(urls), len(set(urls)))
+
     def test_anonymous_cannot_update_profile(self):
         self.client.logout()
 
@@ -965,6 +982,12 @@ class AvatarValidationTest(TestCase):
 
         services.update_avatar(user=self.user, avatar=self._png('blue'))
         profile.refresh_from_db()
+        second_path = profile.avatar.path
 
+        services.update_avatar(user=self.user, avatar=self._png('green'))
+        profile.refresh_from_db()
+
+        self.assertNotEqual(second_path, first_path)
         self.assertNotEqual(profile.avatar.path, first_path)
+        self.assertNotEqual(profile.avatar.path, second_path)
         self.assertFalse(storage.exists(first_path))
