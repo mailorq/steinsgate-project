@@ -1,4 +1,4 @@
-# Steins;Gate Fan Platform
+# Steins;Gate Platform
 
 Steins;Gate platform by [mailorq](https://github.com/mailorq): both seasons, the special episode and the movie, user accounts, ratings, watch progress and comments
 

@@ -20,6 +20,7 @@
 ## Оверлей `compose.loadtest.yaml`
 
 - `DEBUG=False`, `HTTPS_ENABLED=False`.
+- Фиксированный тестовый `EMAIL_DELIVERY_QUOTA_SECRET` для production-подобного профиля; это не секрет окружения.
 - Лимиты запросов подняты до значений, которые не ограничивают прогон.
 - Почтовый бэкенд `locmem` у `celery-worker`: регистрация не отправляет настоящих писем.
 - gunicorn `gthread`: `GUNICORN_WORKERS=4`, `GUNICORN_THREADS=8`.

@@ -12,6 +12,9 @@ services:
       LOADTEST: "1"
       DEBUG: "False"
       HTTPS_ENABLED: "False"
+      # нагрузочный профиль запускается как production-подобный, поэтому settings.py требует отдельный стабильный секрет
+      # это тестовое значение действует только внутри изолированного loadtest-стека
+      EMAIL_DELIVERY_QUOTA_SECRET: "loadtest-only-email-delivery-quota-secret-0123456789abcdef"
       CSRF_TRUSTED_ORIGINS: "http://localhost:${APP_PORT:-4273},http://127.0.0.1:${APP_PORT:-4273}"
       API_AUTH_THROTTLE: "1000000/m"
       API_AUTH_THROTTLE_SUSTAINED: "1000000/h"
