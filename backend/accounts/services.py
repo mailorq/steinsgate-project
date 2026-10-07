@@ -5,6 +5,7 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from datetime import timedelta
+from io import BytesIO
 
 from django.conf import settings
 from django.contrib.auth import authenticate
@@ -12,13 +13,14 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.base import ContentFile
 from django.core.mail import send_mail
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from kombu.exceptions import OperationalError as BrokerUnavailableError
-from PIL import Image
+from PIL import Image, ImageOps, ImageSequence
 
 from .models import EmailDeliveryQuota, EmailVerificationCode, email_delivery_fingerprint
 
@@ -31,8 +33,15 @@ ALLOWED_EMAIL_DOMAINS = (
 MAX_NICKNAME_LENGTH = 50
 ALLOWED_AVATAR_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
 ALLOWED_AVATAR_FORMATS = ("JPEG", "PNG", "GIF", "WEBP")
+AVATAR_FORMAT_EXTENSIONS = {
+    "JPEG": ".jpg",
+    "PNG": ".png",
+    "GIF": ".gif",
+    "WEBP": ".webp",
+}
 MAX_AVATAR_SIZE = 8 * 1024 * 1024
 MAX_AVATAR_PIXELS = 16_000_000
+MAX_AVATAR_FRAMES = 100
 RECONCILE_GRACE = timedelta(minutes=1)
 RECONCILE_BATCH_SIZE = 500
 # общий счетчик сайта в таблице квот: отпечаток адреса это hex HMAC и с ним не совпадет
@@ -439,17 +448,11 @@ def update_nickname(*, user: User, nickname: str) -> None:
     logger.debug("Nickname changed")
 
 
-def update_avatar(*, user: User, avatar) -> None:
-    if avatar.size > MAX_AVATAR_SIZE:
-        raise ProfileError("Файл слишком большой. Максимум 8 МБ")
-
+def _sanitize_avatar(avatar) -> tuple[ContentFile, str]:
     extension = os.path.splitext(avatar.name)[1].lower()
     if extension not in ALLOWED_AVATAR_EXTENSIONS:
         raise ProfileError("Допустимые форматы: JPG, PNG, GIF, WEBP")
 
-    # ``formats`` не даёт Pillow даже разбирать неподдерживаемые форматы: одно
-    # расширение можно подделать. лимит пикселей защищает worker от сжатых
-    # изображений с чрезмерными размерами
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -457,6 +460,70 @@ def update_avatar(*, user: User, avatar) -> None:
                 if image.width * image.height > MAX_AVATAR_PIXELS:
                     raise ProfileError("Изображение слишком большое по разрешению")
                 image.verify()
+
+            avatar.seek(0)
+            with Image.open(avatar, formats=ALLOWED_AVATAR_FORMATS) as image:
+                image_format = image.format
+                if image_format not in AVATAR_FORMAT_EXTENSIONS:
+                    raise ProfileError("Файл не является изображением")
+                if getattr(image, "n_frames", 1) > MAX_AVATAR_FRAMES:
+                    raise ProfileError("Анимация содержит слишком много кадров")
+
+                source_info = image.info.copy()
+                frames = []
+                durations = []
+                disposals = []
+                blends = []
+                total_pixels = 0
+                for frame in ImageSequence.Iterator(image):
+                    total_pixels += frame.width * frame.height
+                    if total_pixels > MAX_AVATAR_PIXELS:
+                        raise ProfileError("Суммарное разрешение анимации слишком большое")
+
+                    frame_info = frame.info.copy()
+                    durations.append(frame_info.get("duration", 0))
+                    disposals.append(
+                        getattr(frame, "disposal_method", frame_info.get("disposal", 0))
+                    )
+                    blends.append(frame_info.get("blend", 0))
+                    frame = ImageOps.exif_transpose(frame)
+                    frames.append(frame.convert("RGB" if image_format == "JPEG" else "RGBA"))
+
+                save_options = {"format": image_format}
+                if image_format == "JPEG":
+                    save_options.update(
+                        quality=90, optimize=True, exif=b"", icc_profile=b"", comment=b""
+                    )
+                elif image_format == "PNG":
+                    save_options.update(optimize=True, exif=b"", icc_profile=b"")
+                elif image_format == "GIF":
+                    save_options["comment"] = b""
+                else:
+                    save_options.update(
+                        quality=90, method=6, exif=b"", icc_profile=b"", xmp=b""
+                    )
+
+                if len(frames) > 1:
+                    save_options.update(
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=durations,
+                        loop=source_info.get("loop", 0),
+                    )
+                    if image_format in {"GIF", "PNG"}:
+                        save_options["disposal"] = disposals
+                    if image_format == "PNG":
+                        save_options["blend"] = blends
+                    if image_format == "WEBP" and "background" in source_info:
+                        save_options["background"] = source_info["background"]
+
+                output = BytesIO()
+                frames[0].save(output, **save_options)
+                if output.tell() > MAX_AVATAR_SIZE:
+                    raise ProfileError("После обработки файл слишком большой")
+
+        cleaned = ContentFile(output.getvalue())
+        return cleaned, AVATAR_FORMAT_EXTENSIONS[image_format]
     except ProfileError:
         raise
     except (Image.DecompressionBombError, Image.DecompressionBombWarning):
@@ -466,10 +533,18 @@ def update_avatar(*, user: User, avatar) -> None:
     finally:
         avatar.seek(0)
 
+
+def update_avatar(*, user: User, avatar) -> None:
+    if avatar.size > MAX_AVATAR_SIZE:
+        raise ProfileError("Файл слишком большой. Максимум 8 МБ")
+
+    cleaned_avatar, extension = _sanitize_avatar(avatar)
+
     avatar.name = f"avatar_{uuid.uuid4().hex}{extension}"
     profile = user.profile
     previous = profile.avatar.name
-    profile.avatar = avatar
+    cleaned_avatar.name = avatar.name
+    profile.avatar = cleaned_avatar
     profile.save(update_fields=["avatar"])
 
     # ImageField не удаляет прежний файл

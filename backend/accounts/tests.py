@@ -965,6 +965,60 @@ class AvatarValidationTest(TestCase):
         self.user.profile.refresh_from_db()
         self.assertTrue(self.user.profile.avatar)
 
+    def test_jpeg_exif_is_removed_and_orientation_is_applied(self):
+        buffer = io.BytesIO()
+        image = Image.new('RGB', (16, 8), 'red')
+        exif = image.getexif()
+        exif[274] = 6
+        exif[315] = 'private metadata'
+        image.save(buffer, format='JPEG', exif=exif)
+        avatar = SimpleUploadedFile('avatar.jpg', buffer.getvalue(), content_type='image/jpeg')
+
+        services.update_avatar(user=self.user, avatar=avatar)
+
+        self.user.profile.refresh_from_db()
+        self.assertTrue(self.user.profile.avatar.name.endswith('.jpg'))
+        with Image.open(self.user.profile.avatar.path) as saved:
+            self.assertEqual(saved.size, (8, 16))
+            self.assertEqual(dict(saved.getexif()), {})
+
+    def test_animated_gif_keeps_animation_and_drops_comment(self):
+        buffer = io.BytesIO()
+        frames = [Image.new('RGBA', (8, 8), color) for color in ('red', 'blue')]
+        frames[0].save(
+            buffer,
+            format='GIF',
+            save_all=True,
+            append_images=frames[1:],
+            duration=[120, 240],
+            loop=2,
+            disposal=[2, 2],
+            comment=b'private metadata',
+        )
+        avatar = SimpleUploadedFile('avatar.gif', buffer.getvalue(), content_type='image/gif')
+
+        services.update_avatar(user=self.user, avatar=avatar)
+
+        self.user.profile.refresh_from_db()
+        with Image.open(self.user.profile.avatar.path) as saved:
+            self.assertEqual(saved.n_frames, 2)
+            self.assertEqual(saved.info.get('duration'), 120)
+            self.assertNotIn('comment', saved.info)
+            saved.seek(1)
+            self.assertEqual(saved.info.get('duration'), 240)
+
+    def test_animation_with_too_many_frames_is_rejected(self):
+        buffer = io.BytesIO()
+        frames = [
+            Image.new('RGB', (1, 1), (index % 256, index * 17 % 256, index * 31 % 256))
+            for index in range(services.MAX_AVATAR_FRAMES + 1)
+        ]
+        frames[0].save(buffer, format='GIF', save_all=True, append_images=frames[1:])
+        avatar = SimpleUploadedFile('avatar.gif', buffer.getvalue(), content_type='image/gif')
+
+        with self.assertRaises(services.ProfileError):
+            services.update_avatar(user=self.user, avatar=avatar)
+
     def test_excessive_resolution_rejected(self):
         buffer = io.BytesIO()
         Image.new('1', (4_001, 4_001)).save(buffer, format='PNG')
