@@ -10,7 +10,7 @@ RUN npm run build
 
 
 # Unprivileged-образ: мастер процесс не под root, порт 4173 > 1024, поэтому NET_BIND_SERVICE не нужен
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 
 USER root
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
