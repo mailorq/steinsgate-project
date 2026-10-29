@@ -14,6 +14,7 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 USER root
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+COPY nginx/backend-upstream.conf /etc/nginx/backend-upstream.conf
 COPY nginx/security-headers.conf /etc/nginx/security-headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 USER nginx
