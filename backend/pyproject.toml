@@ -18,7 +18,7 @@ dependencies = [
     "pillow==13.0.0",
     "psycopg2-binary==2.9.11",
     "python-dotenv==1.2.2",
-    "redis==6.4.0",
+    "redis==8.1.0",
 ]
 
 [project.optional-dependencies]
