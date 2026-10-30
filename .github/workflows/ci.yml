@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # конфиг периметра ломается только в рантайме, поэтому синтаксис проверяется тем же образом, что и в продакшене
       - name: Validate nginx configuration
-        run: docker run --rm -v "$PWD/frontend/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" -v "$PWD/frontend/nginx/security-headers.conf:/etc/nginx/security-headers.conf:ro" -v "$PWD/frontend/nginx/backend-upstream.conf:/etc/nginx/backend-upstream.conf:ro" nginxinc/nginx-unprivileged:1.27-alpine nginx -t
+        run: docker run --rm -v "$PWD/frontend/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" -v "$PWD/frontend/nginx/security-headers.conf:/etc/nginx/security-headers.conf:ro" -v "$PWD/frontend/nginx/backend-upstream.conf:/etc/nginx/backend-upstream.conf:ro" nginxinc/nginx-unprivileged:1.30-alpine nginx -t
 
   secrets:
     runs-on: ubuntu-latest
