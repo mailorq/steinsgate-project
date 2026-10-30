@@ -14,7 +14,8 @@ export default defineConfig({
     },
   },
   server: {
-    host: true,
+    // по умолчанию только петля; в контейнере dev-режима (compose.dev.yaml) включается явно
+    host: process.env.VITE_HOST === "true",
     // Bind-mount в контейнере на Windows не доставляет события файловой системы
     watch: process.env.VITE_USE_POLLING ? { usePolling: true, interval: 300 } : undefined,
     proxy: {

@@ -37,6 +37,7 @@ services:
     environment:
       VITE_PROXY_TARGET: http://backend:8000
       VITE_USE_POLLING: "1"
+      VITE_HOST: "true"
     ports: !override
       # только петля: dev-сервер не предназначен для внешней сети
       - "127.0.0.1:5173:5173"
