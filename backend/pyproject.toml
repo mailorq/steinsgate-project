@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "locust==2.46.4",
+    "locust==2.47.0",
     "ruff==0.15.20",
 ]
 
